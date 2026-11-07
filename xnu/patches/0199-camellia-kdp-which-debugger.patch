@@ -1,0 +1,36 @@
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1076,2 +1076,9 @@
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
++	extern const char *sweet_panic_text;
++	extern unsigned int sweet_panic_reason;
++	if (panic_format_str != NULL) {
++		sweet_panic_text = panic_format_str;
++		sweet_panic_reason = reason;
++		printf("\nSWEET PANIC TEXT: %s (reason %u)\n", panic_format_str, reason);
++	}
+ 	sweet_early_panic(panic_format_str, panic_args);
+diff --git a/osfmk/kdp/kdp_udp.c b/osfmk/kdp/kdp_udp.c
+--- a/osfmk/kdp/kdp_udp.c
++++ b/osfmk/kdp/kdp_udp.c
+@@ -1195,5 +1195,12 @@
+ }
+ 
++const char *sweet_panic_text;
++unsigned int sweet_panic_reason;
++
++extern const char *debugger_message;
++extern const char *debugger_panic_str;
++extern int debugger_current_op;
++
+ static void
+ kdp_connection_wait(void)
+ {
+@@ -1243,4 +1243,6 @@
+ 	printf("\nWaiting for remote debugger connection.\n");
+ 	kprintf("\nWaiting for remote debugger connection.\n");
+ 
++	printf("\nSWEET KDP PROBE: op=%d msg=%s panic=%s\n", debugger_current_op, debugger_message != NULL ? debugger_message : "(null)", debugger_panic_str != NULL ? debugger_panic_str : "(null)");
++	kprintf("\nSWEET KDP PROBE: op=%d msg=%s panic=%s\n", debugger_current_op, debugger_message != NULL ? debugger_message : "(null)", debugger_panic_str != NULL ? debugger_panic_str : "(null)");
+ 	if (reattach_wait == 0) {
