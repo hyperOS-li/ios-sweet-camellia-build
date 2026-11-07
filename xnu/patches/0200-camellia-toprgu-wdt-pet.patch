@@ -1,0 +1,51 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -78,10 +78,41 @@
+ static void
+ sweet_hb_start(void)
+ {
+ 	thread_t thread;
+ 	if (kernel_thread_start(sweet_hb_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+ }
++
++static void
++sweet_wdt_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	extern unsigned int ml_phys_read_word(unsigned long);
++	extern void ml_phys_write_word(unsigned long, unsigned int);
++	static int n;
++
++	for (;;) {
++		uint64_t deadline;
++
++		/* MTK TOPRGU WDT pet: write 0x1971 to WDT_RESTART. */
++		ml_phys_write_word(0x10007008UL, 0x1971);
++		printf("SWEET WDT: pet %d mode=%x status=%x\n", n++,
++		    ml_phys_read_word(0x10007000UL), ml_phys_read_word(0x1000700CUL));
++		nanoseconds_to_absolutetime(1ull * NSEC_PER_SEC, &deadline);
++		deadline += mach_absolute_time();
++		assert_wait_deadline_with_leeway((event_t)&sweet_wdt_thread, THREAD_UNINT,
++		    TIMEOUT_URGENCY_SYS_CRITICAL, deadline, 0);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++static void
++sweet_wdt_start(void)
++{
++	thread_t thread;
++	if (kernel_thread_start(sweet_wdt_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
+ #endif
+ extern void sweet_sample_start(void);
+@@ -692,4 +723,5 @@
+ 	sweet_log_start();
+ #if defined(SWEET)
+ 	sweet_hb_start();
++	sweet_wdt_start();
+ #endif
