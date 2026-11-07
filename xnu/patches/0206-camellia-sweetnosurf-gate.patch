@@ -1,12 +1,7 @@
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
-@@ -723,2 +723,4 @@
- 
-+extern "C" int PE_parse_boot_argn(const char *arg_string, void *arg_ptr, unsigned int max_len);
-+
- IOReturn
-@@ -725,7 +727,15 @@
+@@ -725,7 +725,15 @@
  IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
      __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
      __unused void *reference)
