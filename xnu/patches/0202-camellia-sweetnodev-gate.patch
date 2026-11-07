@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -697,5 +697,13 @@
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+-	sweet_keys_init();
+-	sweet_touch_init();
+-	sweet_usb_probe();
++	{
++		int nodev = 0;
++		PE_parse_boot_argn("sweetnodev", &nodev, sizeof(nodev));
++		if (!nodev) {
++			sweet_keys_init();
++			sweet_touch_init();
++			sweet_usb_probe();
++		} else {
++			printf("SWEET: keys/touch/usb disabled by sweetnodev=1\n");
++		}
++	}
+ 	return 0;
