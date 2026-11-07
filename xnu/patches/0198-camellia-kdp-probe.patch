@@ -23,7 +23,7 @@ diff --git a/osfmk/kdp/kdp_udp.c b/osfmk/kdp/kdp_udp.c
  static void
  kdp_connection_wait(void)
  {
-@@ -1243,4 +1243,8 @@
+@@ -1243,4 +1243,6 @@
  	printf("\nWaiting for remote debugger connection.\n");
  	kprintf("\nWaiting for remote debugger connection.\n");
  
