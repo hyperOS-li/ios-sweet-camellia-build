@@ -1,0 +1,9 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -554,3 +554,5 @@
+ 		memcpy(rec, args->structureInput, sizeof(rec));
++		IOLog("SWEET FB: swap enter (sel 5 accepted)\n");
+ 		fFB->swap(rec);
++		IOLog("SWEET FB: swap done\n");
+ 		break;
