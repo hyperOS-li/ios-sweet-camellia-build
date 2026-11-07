@@ -1,0 +1,18 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -532,6 +532,14 @@
+ 	IOReturn ret = kIOReturnSuccess;
+ 	uint64_t out[2] = { 0, 0 };
+ 	uint32_t outCount = 0;
+ 
+ 	IOLog("SWEET FB: enter sel %u\n", selector);
++	{
++		int nofbuc = 0;
++		PE_parse_boot_argn("sweetnofbuc", &nofbuc, sizeof(nofbuc));
++		if (nofbuc) {
++			IOLog("SWEET FB: user client disabled by sweetnofbuc=1\n");
++			return kIOReturnUnsupported;
++		}
++	}
+ 	switch (selector) {
