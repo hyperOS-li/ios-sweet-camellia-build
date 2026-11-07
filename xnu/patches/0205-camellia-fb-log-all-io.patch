@@ -1,0 +1,12 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -609,5 +609,7 @@
+ 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+ 		bzero(args->structureOutput, args->structureOutputSize);
+ 	}
+-	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
++	if (selector >= 64 || selector == 3 || selector == 4 || selector == 5 ||
++	    selector == 6 || selector == 12 ||
++	    !(sweet_fb_logged & (1ULL << selector))) {
+ 		if (selector < 64) {
