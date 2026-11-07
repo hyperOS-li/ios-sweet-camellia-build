@@ -1,0 +1,9 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -697,2 +697,5 @@
+ 		} else {
++			IOByteCount sweetSegLen = 0;
++			addr64_t sweetPhys = mem->getPhysicalSegment(0, &sweetSegLen, 0);
++			IOLog("SWEET SURF: alloc %u bytes phys 0x%llx len 0x%llx\n", s->allocSize, (uint64_t)sweetPhys, (uint64_t)sweetSegLen);
+ 			bzero(mem->getBytesNoCopy(), s->allocSize);
