@@ -1,0 +1,2 @@
+# Loader/bootstrap layer strings. Verify on payload/out/loader.bin (gunzip of loader.bin.gz).
+SWEET EARLY

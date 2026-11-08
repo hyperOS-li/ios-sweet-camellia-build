@@ -1,0 +1,5 @@
+# 0190 test kernel: panic at the top of sweet_force_hid makes the force-HID and
+# GPU code unreachable, so the compiler drops their strings. Explicitly allowed.
+SWEET HID: force buttons alloc=%p
+SWEET GPU: IOAcceleratorES started
+SWEET WDT: toprgu mode/restart cleared

@@ -1,0 +1,17 @@
+SWEET SURF: create enter
+SWEET SURF: layout ok
+SWEET SURF: alloc begin
+SWEET SURF: bzero done
+SWEET SURF: publish ok
+SWEET SURF: map begin
+SWEET SURF: map done
+SWEET SURF: returnSurface
+SWEET FB: present enter
+SWEET FB: present layer
+SWEET FB: present copy
+SWEET FB: present done
+sweetnoalloc
+sweetnobzero
+sweetnomap
+sweetnopresent
+sweetpresentrows

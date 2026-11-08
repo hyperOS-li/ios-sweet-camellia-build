@@ -1,0 +1,7 @@
+# Baseline: every normal kernel must contain these feature strings.
+SWEET: hb disp=%d res=%d wdt=%d iomfb=%d dt=%d nubs=%d d0=%d
+SWEET FB: enter sel %u
+SWEET FB: display %s (console kept)
+SWEET HID: force buttons alloc=%p
+SWEET GPU: IOAcceleratorES started
+SWEET WDT: toprgu mode/restart cleared
