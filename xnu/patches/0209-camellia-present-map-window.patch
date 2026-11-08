@@ -1,15 +1,18 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -50,6 +50,7 @@
- #include <pexpert/pexpert.h>
+@@ -51,6 +51,10 @@
  #include <kern/clock.h>
  #include <sys/proc.h>
-+#include <machine/machine_routines.h>
  
++/* arm64 defines this in osfmk/arm64/machine_routines.c; the arm header that
++ * declares it is not part of the arm64 include set. */
++extern "C" uintptr_t ml_io_map_wcomb(uintptr_t phys_addr, uintptr_t size);
++
  enum {
  	kSweetFBGetLayerDefaultSurface  = 3,
-@@ -85,6 +86,9 @@
+ 	kSweetFBSwapBegin               = 4,
+@@ -85,6 +89,9 @@
  /* 0 = not started, 1 = running, <0 = failed stage (see AppleCLCD::start). */
  extern "C" int sweet_display_state = 0;
  
@@ -19,7 +22,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  /*
   * Diagnostic: number of services of a class currently in the registry, so
   * the heartbeat can show whether IOResources/IOWatchdog/IOMobileFramebuffer
-@@ -258,6 +262,17 @@
+@@ -258,6 +265,17 @@
  		OSSafeReleaseNULL(fWorkLoop);
  		return false;
  	}
@@ -28,8 +31,8 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +
 +		PE_parse_boot_argn("sweetpresentmap", &altmap, sizeof(altmap));
 +		if (altmap && fSurface != NULL) {
-+			sweet_alt_pixels = (uintptr_t)ml_io_map_wcomb((vm_offset_t)fPhys,
-+			    (vm_size_t)fSurface->allocSize);
++			sweet_alt_pixels = ml_io_map_wcomb((uintptr_t)fPhys,
++			    (uintptr_t)fSurface->allocSize);
 +			IOLog("SWEET FB: present map alt=%p phys=0x%llx size=%u\n",
 +			    (void *)sweet_alt_pixels, fPhys, fSurface->allocSize);
 +		}
@@ -37,7 +40,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	fVsync = IOTimerEventSource::timerEventSource(this, &AppleCLCD::vsyncFired);
  	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
  		sweet_display_state = -4;
-@@ -396,7 +411,10 @@
+@@ -396,7 +414,10 @@
  	static unsigned int sweet_present_logged;
  	static int sweet_nopresent = -1;
  	static int sweet_present_rows = -1;
@@ -48,7 +51,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  
  	if (sweet_nopresent < 0) {
  		int value = 0;
-@@ -408,10 +426,20 @@
+@@ -408,10 +429,20 @@
  		PE_parse_boot_argn("sweetpresentrows", &value, sizeof(value));
  		sweet_present_rows = value;
  	}
@@ -71,7 +74,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	}
  	if (sweet_nopresent) {
  		return;
-@@ -499,20 +527,36 @@
+@@ -499,20 +530,36 @@
  			src = 0;
  		}
  		if (src != 0 && bpe == 4) {
