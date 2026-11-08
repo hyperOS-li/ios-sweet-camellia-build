@@ -1,23 +1,8 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -86,1 +86,4 @@
- extern "C" int sweet_display_state = 0;
-+extern "C" int sweet_console_muted;
-+static bool sweet_pending_valid;
-+
-@@ -247,1 +250,8 @@
- 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
-+	{
-+		int quiet = 0;
-+		if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
-+			sweet_console_muted = 1;
-+		}
-+		IOLog("SWEET FB: 0211 fill active v4\n");
-+	}
-@@ -298,1 +308,1 @@
+@@ -298,3 +298,3 @@
 -	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
-+	bool flush = (count % fb->fFlushTicks) == 0 && (fb->fDirty || sweet_pending_valid);
-@@ -356,1 +366,2 @@
- 	fDirty = true;
-+	sweet_pending_valid = true;
++	bool flush = (count % fb->fFlushTicks) == 0 && (fb->fDirty || fb->fSwapID != 0);
+ 	uint8_t *rec = NULL;
+ 	if (flush) {
