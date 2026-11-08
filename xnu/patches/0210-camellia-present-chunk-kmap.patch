@@ -1,0 +1,96 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -51,9 +51,11 @@
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+ 
+-/* arm64 defines this in osfmk/arm64/machine_routines.c; the arm header that
+- * declares it is not part of the arm64 include set. */
+-extern "C" uintptr_t ml_io_map_wcomb(uintptr_t phys_addr, uintptr_t size);
++/* arm64 defines these in osfmk/arm64/machine_routines.c; the arm header that
++ * declares them is not part of the arm64 include set.  ml_io_map_unmappable
++ * allocates from kernel_map (the io_submap is only 8 MB). */
++extern "C" uintptr_t ml_io_map_unmappable(uintptr_t phys_addr, uintptr_t size,
++    unsigned int flags);
+ 
+ enum {
+ 	kSweetFBGetLayerDefaultSurface  = 3,
+@@ -270,8 +272,8 @@
+ 
+ 		PE_parse_boot_argn("sweetpresentmap", &altmap, sizeof(altmap));
+ 		if (altmap && fSurface != NULL) {
+-			sweet_alt_pixels = ml_io_map_wcomb((uintptr_t)fPhys,
+-			    (uintptr_t)fSurface->allocSize);
++			sweet_alt_pixels = ml_io_map_unmappable((uintptr_t)fPhys,
++			    (uintptr_t)fSurface->allocSize, 0x6 /* VM_WIMG_WCOMB */);
+ 			IOLog("SWEET FB: present map alt=%p phys=0x%llx size=%u\n",
+ 			    (void *)sweet_alt_pixels, fPhys, fSurface->allocSize);
+ 		}
+@@ -415,6 +417,7 @@
+ 	static int sweet_nopresent = -1;
+ 	static int sweet_present_rows = -1;
+ 	static int sweet_window = -1;
++	static int sweet_chunk = -1;
+ 	uint32_t mask = get32(rec, 0x104);
+ 	uintptr_t dst = sweet_alt_pixels ? sweet_alt_pixels : fPixels;
+ 	int32_t win_start = 0, win_len = 0;
+@@ -434,15 +437,20 @@
+ 		PE_parse_boot_argn("sweetpresentwindow", &value, sizeof(value));
+ 		sweet_window = value;
+ 	}
++	if (sweet_chunk < 0) {
++		int value = 0;
++		PE_parse_boot_argn("sweetpresentchunk", &value, sizeof(value));
++		sweet_chunk = value;
++	}
+ 	if (sweet_window > 0) {
+ 		win_start = (int32_t)(sweet_window_pos % (uint32_t)fHeight);
+ 		win_len = sweet_window;
+ 	}
+ 	if (sweet_present_logged < 8) {
+ 		sweet_present_logged++;
+-		IOLog("SWEET FB: present enter t=%llums frame=%u mask=0x%x id0=%u dst=%p win=%d/%d\n",
++		IOLog("SWEET FB: present enter t=%llums frame=%u mask=0x%x id0=%u dst=%p win=%d/%d chunk=%d\n",
+ 		    sweet_trace_ms(), sweet_present_logged, mask, get32(rec, 0x54),
+-		    (void *)dst, win_start, win_len);
++		    (void *)dst, win_start, win_len, sweet_chunk);
+ 	}
+ 	if (sweet_nopresent) {
+ 		return;
+@@ -547,13 +555,29 @@
+ 				}
+ 			}
+ 			if (sweet_present_logged <= 8) {
+-				IOLog("SWEET FB: present copy t=%llums id %u w %d h %d rows %d..%d win %d/%d\n",
+-				    sweet_trace_ms(), id, w, h, y0, y1, win_start, win_len);
++				IOLog("SWEET FB: present copy t=%llums id %u w %d h %d rows %d..%d win %d/%d chunk %d\n",
++				    sweet_trace_ms(), id, w, h, y0, y1, win_start, win_len, sweet_chunk);
+ 			}
+-			for (int32_t y = y0; y < y1; y++) {
+-				memcpy((void *)(dst + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++			if (sweet_chunk > 0) {
++				for (int32_t y = y0; y < y1; ) {
++					int32_t yend = y + sweet_chunk;
++
++					if (yend > y1) {
++						yend = y1;
++					}
++					for (; y < yend; y++) {
++						memcpy((void *)(dst + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++						    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
++						    (size_t)w * 4);
++					}
++					OSSynchronizeIO();
++				}
++			} else {
++				for (int32_t y = y0; y < y1; y++) {
++					memcpy((void *)(dst + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++					    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
++					    (size_t)w * 4);
++				}
+ 			}
+ 		}
+ 		s->release();
