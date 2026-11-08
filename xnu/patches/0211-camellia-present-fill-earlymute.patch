@@ -1,47 +1,23 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -86,6 +86,11 @@
- /* 0 = not started, 1 = running, <0 = failed stage (see AppleCLCD::start). */
+@@ -86,1 +86,4 @@
  extern "C" int sweet_display_state = 0;
- 
-+/* 0211: mute the console as soon as the framebuffer starts (not at first present),
-+ * and keep presenting the last frame so the 200-row window fills the whole panel. */
 +extern "C" int sweet_console_muted;
 +static bool sweet_pending_valid;
 +
- /*
-  * Diagnostic: number of services of a class currently in the registry, so
-  * the heartbeat can show whether IOResources/IOWatchdog/IOMobileFramebuffer
-@@ -247,7 +251,14 @@
- 	uint32_t hz = 10;
- 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
- 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+@@ -247,1 +250,8 @@
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
 +	{
 +		int quiet = 0;
 +		if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
 +			sweet_console_muted = 1;
 +		}
-+		IOLog("SWEET FB: 0211 fill active v3\n");
++		IOLog("SWEET FB: 0211 fill active v4\n");
 +	}
- 
- 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
- 	setProperty("external", false);
-@@ -356,6 +366,7 @@
- 	IOLockLock(fLock);
- 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
- 	fDirty = true;
-+	sweet_pending_valid = true;
- 	IOLockUnlock(fLock);
- 	if ((++sweet_fb_swap_count % 1000) == 0) {
- 		IOLog("SWEET FB: %llu swaps\n", sweet_fb_swap_count);
-@@ -298,7 +309,7 @@
- 		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
- 		return;
- 	}
+@@ -298,1 +308,1 @@
 -	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
 +	bool flush = (count % fb->fFlushTicks) == 0 && (fb->fDirty || sweet_pending_valid);
- 	uint8_t *rec = NULL;
- 	if (flush) {
- 		rec = (uint8_t *)IOMallocData(SWEET_FB_SWAP_REC_SIZE);
+@@ -356,1 +366,2 @@
+ 	fDirty = true;
++	sweet_pending_valid = true;
