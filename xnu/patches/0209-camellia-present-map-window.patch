@@ -1,0 +1,114 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -50,6 +50,7 @@
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
+ #include <sys/proc.h>
++#include <machine/machine_routines.h>
+ 
+ enum {
+ 	kSweetFBGetLayerDefaultSurface  = 3,
+@@ -258,6 +259,17 @@
+ 		OSSafeReleaseNULL(fWorkLoop);
+ 		return false;
+ 	}
++	{
++		int altmap = 0;
++
++		PE_parse_boot_argn("sweetpresentmap", &altmap, sizeof(altmap));
++		if (altmap && fSurface != NULL) {
++			sweet_alt_pixels = (uintptr_t)ml_io_map_wcomb((vm_offset_t)fPhys,
++			    (vm_size_t)fSurface->allocSize);
++			IOLog("SWEET FB: present map alt=%p phys=0x%llx size=%u\n",
++			    (void *)sweet_alt_pixels, fPhys, fSurface->allocSize);
++		}
++	}
+ 	fVsync = IOTimerEventSource::timerEventSource(this, &AppleCLCD::vsyncFired);
+ 	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
+ 		sweet_display_state = -4;
+@@ -370,6 +382,9 @@
+ 	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+ 	return ns / 1000000ULL;
+ }
++
++static uintptr_t sweet_alt_pixels;      /* sweetpresentmap=1: ml_io_map_wcomb mapping */
++static uint32_t  sweet_window_pos;      /* sweetpresentwindow: rotating row */
+ 
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+ /*
+@@ -396,7 +411,10 @@
+ 	static unsigned int sweet_present_logged;
+ 	static int sweet_nopresent = -1;
+ 	static int sweet_present_rows = -1;
++	static int sweet_window = -1;
+ 	uint32_t mask = get32(rec, 0x104);
++	uintptr_t dst = sweet_alt_pixels ? sweet_alt_pixels : fPixels;
++	int32_t win_start = 0, win_len = 0;
+ 
+ 	if (sweet_nopresent < 0) {
+ 		int value = 0;
+@@ -408,10 +426,20 @@
+ 		PE_parse_boot_argn("sweetpresentrows", &value, sizeof(value));
+ 		sweet_present_rows = value;
+ 	}
++	if (sweet_window < 0) {
++		int value = 0;
++		PE_parse_boot_argn("sweetpresentwindow", &value, sizeof(value));
++		sweet_window = value;
++	}
++	if (sweet_window > 0) {
++		win_start = (int32_t)(sweet_window_pos % (uint32_t)fHeight);
++		win_len = sweet_window;
++	}
+ 	if (sweet_present_logged < 8) {
+ 		sweet_present_logged++;
+-		IOLog("SWEET FB: present enter t=%llums frame=%u mask=0x%x id0=%u\n",
+-		    sweet_trace_ms(), sweet_present_logged, mask, get32(rec, 0x54));
++		IOLog("SWEET FB: present enter t=%llums frame=%u mask=0x%x id0=%u dst=%p win=%d/%d\n",
++		    sweet_trace_ms(), sweet_present_logged, mask, get32(rec, 0x54),
++		    (void *)dst, win_start, win_len);
+ 	}
+ 	if (sweet_nopresent) {
+ 		return;
+@@ -499,20 +527,36 @@
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++			int32_t y0 = 0, y1 = h;
++
+ 			if (sweet_present_rows > 0 && h > sweet_present_rows) {
+ 				h = sweet_present_rows;
++				y1 = h;
++			}
++			if (win_len > 0) {
++				int32_t ws = win_start, we = win_start + win_len;
++
++				if (dy >= we || dy + h <= ws) {
++					y0 = y1 = 0;
++				} else {
++					y0 = ws > dy ? ws - dy : 0;
++					y1 = we < dy + h ? we - dy : h;
++				}
+ 			}
+ 			if (sweet_present_logged <= 8) {
+-				IOLog("SWEET FB: present copy t=%llums id %u w %d h %d\n",
+-				    sweet_trace_ms(), id, w, h);
++				IOLog("SWEET FB: present copy t=%llums id %u w %d h %d rows %d..%d win %d/%d\n",
++				    sweet_trace_ms(), id, w, h, y0, y1, win_start, win_len);
+ 			}
+-			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++			for (int32_t y = y0; y < y1; y++) {
++				memcpy((void *)(dst + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
+ 			}
+ 		}
+ 		s->release();
++	}
++	if (win_len > 0) {
++		sweet_window_pos = (sweet_window_pos + (uint32_t)win_len) % (uint32_t)fHeight;
+ 	}
+ 	if (sweet_present_logged <= 8) {
+ 		IOLog("SWEET FB: present done t=%llums\n", sweet_trace_ms());
