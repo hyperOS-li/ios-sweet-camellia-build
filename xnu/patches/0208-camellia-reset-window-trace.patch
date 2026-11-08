@@ -1,0 +1,212 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -39,6 +39,7 @@
+ #include <libkern/c++/OSNumber.h>
+ #include <libkern/c++/OSUnserialize.h>
+ #include <sys/proc.h>
++#include <kern/clock.h>
+ 
+ enum {
+ 	kSweetSurfaceCreate             = 0,
+@@ -74,6 +75,24 @@
+ static uint32_t      sweet_surface_creates_logged;
+ static uint64_t      sweet_surface_wired;       /* bytes of buffer surfaces */
+ #define SWEET_SURFACE_WIRED_MAX         (1536ull << 20)
++
++static uint64_t
++sweet_trace_ms(void)
++{
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / 1000000ULL;
++}
++
++static int
++sweet_trace_flag(const char *name)
++{
++	int value = 0;
++
++	PE_parse_boot_argn(name, &value, sizeof(value));
++	return value;
++}
+ 
+ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
+ 
+@@ -527,12 +546,21 @@
+ 	s->retain();
+ 	ref->surface = s;
+ 	ref->count = 1;
++	if (sweet_trace_flag("sweetnomap")) {
++		IOLog("SWEET SURF: map skipped (sweetnomap=1) id=%u\n", s->id);
++		ref->release();
++		return kIOReturnUnsupported;
++	}
++	IOLog("SWEET SURF: map begin t=%llums id=%u size=%u\n",
++	    sweet_trace_ms(), s->id, s->allocSize);
+ 	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache);
+ 	ref->state = s->state->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapReadOnly);
+ 	if (ref->data == NULL || ref->state == NULL) {
+ 		ref->release();
+ 		return kIOReturnVMError;
+ 	}
++	IOLog("SWEET SURF: map done t=%llums id=%u data=%p state=%p\n",
++	    sweet_trace_ms(), s->id, ref->data, ref->state);
+ 	IOLockLock(fLock);
+ 	SweetSurfaceRef *raced = findRef(s->id, NULL);
+ 	if (raced != NULL && raced->surface == s) {
+@@ -628,6 +656,8 @@
+ 	if (ret != kIOReturnSuccess) {
+ 		return ret;
+ 	}
++	IOLog("SWEET SURF: returnSurface t=%llums id=%u existing=%d\n",
++	    sweet_trace_ms(), s->id, existing);
+ 	uint8_t *out = (uint8_t *)IOMallocZeroData(SWEET_SURFACE_RESULT_SIZE);
+ 	if (out == NULL) {
+ 		ret = kIOReturnNoMemory;
+@@ -653,6 +683,14 @@
+ 	uint32_t len = args->structureInputSize;
+ 	char *copy = NULL;
+ 	IOReturn ret;
++	char pname[32];
++
++	proc_selfname(pname, sizeof(pname));
++	if (sweet_surface_creates_logged < 32) {
++		IOLog("SWEET SURF: create enter t=%llums proc=%s parent=%u\n",
++		    sweet_trace_ms(), pname,
++		    args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0);
++	}
+ 
+ 	if (args->structureInputDescriptor != NULL) {
+ 		len = (uint32_t)args->structureInputDescriptor->getLength();
+@@ -686,23 +724,41 @@
+ 	ret = sweet_surface_layout(s, props);
+ 	if (ret == kIOReturnSuccess) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
+-		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
++		int noalloc = sweet_trace_flag("sweetnoalloc");
++
++		IOLog("SWEET SURF: layout ok t=%llums %ux%u fmt=0x%x bpe=%u bpr=%u size=%u offset=%u planes=%u\n",
++		    sweet_trace_ms(), s->width, s->height, s->pixelFormat, s->bytesPerElement,
++		    s->bytesPerRow, s->allocSize, s->offset, s->planeCount);
++		IOLog("SWEET SURF: alloc begin t=%llums size=%u noalloc=%d\n",
++		    sweet_trace_ms(), s->allocSize, noalloc);
++		if (!noalloc &&
++		    (uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+ 			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
+ 		}
+ 		if (mem == NULL) {
+-			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
++			if (!noalloc) {
++				OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
++			}
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+ 			IOByteCount sweetSegLen = 0;
+ 			addr64_t sweetPhys = mem->getPhysicalSegment(0, &sweetSegLen, 0);
++			int nobzero = sweet_trace_flag("sweetnobzero");
++
+ 			IOLog("SWEET SURF: alloc %u bytes phys 0x%llx len 0x%llx\n", s->allocSize, (uint64_t)sweetPhys, (uint64_t)sweetSegLen);
+-			bzero(mem->getBytesNoCopy(), s->allocSize);
++			if (!nobzero) {
++				bzero(mem->getBytesNoCopy(), s->allocSize);
++			}
++			IOLog("SWEET SURF: bzero done t=%llums skipped=%d\n", sweet_trace_ms(), nobzero);
+ 			s->memory = mem;
+ 			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {
+ 				ret = kIOReturnNoResources;
++			} else {
++				IOLog("SWEET SURF: publish ok t=%llums id=%u\n",
++				    sweet_trace_ms(), s->id);
+ 			}
+ 		}
+ 	}
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -342,6 +342,15 @@
+ static uint32_t sweet_fb_swaps_logged;
+ static uint64_t sweet_fb_swap_count;
+ 
++static uint64_t
++sweet_trace_ms(void)
++{
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / 1000000ULL;
++}
++
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+ /*
+  * A swap only records the frame: copying 10 MB into the panel on every
+@@ -364,8 +373,29 @@
+ void
+ AppleCLCD::present(const uint8_t *rec)
+ {
++	static unsigned int sweet_present_logged;
++	static int sweet_nopresent = -1;
++	static int sweet_present_rows = -1;
+ 	uint32_t mask = get32(rec, 0x104);
+ 
++	if (sweet_nopresent < 0) {
++		int value = 0;
++		PE_parse_boot_argn("sweetnopresent", &value, sizeof(value));
++		sweet_nopresent = value;
++	}
++	if (sweet_present_rows < 0) {
++		int value = 0;
++		PE_parse_boot_argn("sweetpresentrows", &value, sizeof(value));
++		sweet_present_rows = value;
++	}
++	if (sweet_present_logged < 8) {
++		sweet_present_logged++;
++		IOLog("SWEET FB: present enter t=%llums frame=%u mask=0x%x id0=%u\n",
++		    sweet_trace_ms(), sweet_present_logged, mask, get32(rec, 0x54));
++	}
++	if (sweet_nopresent) {
++		return;
++	}
+ 
+ 	if (!fConsolePaused) {
+ 		int quiet = 0;
+@@ -396,6 +426,11 @@
+ 			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
+ 			    get32(a, 12), dx, dy, w, h);
+ 		}
++		if (sweet_present_logged <= 8) {
++			IOLog("SWEET FB: present layer %u id %u %s w %u h %u\n",
++			    layer, id, s == NULL ? "missing" : (s == fSurface ? "default" : "copy"),
++			    (uint32_t)w, (uint32_t)h);
++		}
+ 		if (s == NULL || s == fSurface) {
+ 			OSSafeReleaseNULL(s);
+ 			continue;
+@@ -444,6 +479,13 @@
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++			if (sweet_present_rows > 0 && h > sweet_present_rows) {
++				h = sweet_present_rows;
++			}
++			if (sweet_present_logged <= 8) {
++				IOLog("SWEET FB: present copy t=%llums id %u w %d h %d\n",
++				    sweet_trace_ms(), id, w, h);
++			}
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+@@ -451,6 +493,9 @@
+ 			}
+ 		}
+ 		s->release();
++	}
++	if (sweet_present_logged <= 8) {
++		IOLog("SWEET FB: present done t=%llums\n", sweet_trace_ms());
+ 	}
+ }
+ 
