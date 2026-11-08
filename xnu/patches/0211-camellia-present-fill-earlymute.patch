@@ -23,7 +23,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +		if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
 +			sweet_console_muted = 1;
 +		}
-+		IOLog("SWEET FB: 0211 fill active\n");
++		IOLog("SWEET FB: 0211 fill active v2\n");
 +	}
  
  	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
