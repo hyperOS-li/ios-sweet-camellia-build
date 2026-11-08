@@ -9,7 +9,17 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  
  enum {
  	kSweetFBGetLayerDefaultSurface  = 3,
-@@ -258,6 +259,17 @@
+@@ -85,6 +86,9 @@
+ /* 0 = not started, 1 = running, <0 = failed stage (see AppleCLCD::start). */
+ extern "C" int sweet_display_state = 0;
+ 
++static uintptr_t sweet_alt_pixels;      /* sweetpresentmap=1: ml_io_map_wcomb mapping */
++static uint32_t  sweet_window_pos;      /* sweetpresentwindow: rotating row */
++
+ /*
+  * Diagnostic: number of services of a class currently in the registry, so
+  * the heartbeat can show whether IOResources/IOWatchdog/IOMobileFramebuffer
+@@ -258,6 +262,17 @@
  		OSSafeReleaseNULL(fWorkLoop);
  		return false;
  	}
@@ -27,16 +37,6 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	fVsync = IOTimerEventSource::timerEventSource(this, &AppleCLCD::vsyncFired);
  	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
  		sweet_display_state = -4;
-@@ -370,6 +382,9 @@
- 	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
- 	return ns / 1000000ULL;
- }
-+
-+static uintptr_t sweet_alt_pixels;      /* sweetpresentmap=1: ml_io_map_wcomb mapping */
-+static uint32_t  sweet_window_pos;      /* sweetpresentwindow: rotating row */
- 
- /* Copy each enabled layer's surface into the panel memory (no scaling). */
- /*
 @@ -396,7 +411,10 @@
  	static unsigned int sweet_present_logged;
  	static int sweet_nopresent = -1;
