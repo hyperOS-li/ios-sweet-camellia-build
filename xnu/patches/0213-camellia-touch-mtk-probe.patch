@@ -432,23 +432,26 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 --- a/bsd/dev/sweet_touch.c
 +++ b/bsd/dev/sweet_touch.c
-@@ -20,6 +20,7 @@
- extern kern_return_t thread_terminate(thread_t);
+@@ -21,6 +21,7 @@
  extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
  extern void sweet_hid_touch(int finger, int down, int x, int y);
+ extern void sweet_autotouch_init(void);
 +extern void sweet_touch_mtk_init(void);
  void sweet_touch_init(void);
  
  #define TOUCH_SE_PA      0x00a84000u
-@@ -640,6 +641,16 @@
+@@ -641,9 +642,19 @@
  {
  	int enabled = 1;
  	thread_t thread;
 +	int mtk = 0;
+ 
+ 	/* Synthetic touch (0212) starts where the input drivers do. */
+ 	sweet_autotouch_init();
 +
 +	/*
-+	 * camellia (MT6833) has none of the Qualcomm GCC/TLMM/SE7 blocks this
-+	 * driver uses; the MT6833 Novatek probe takes over when asked to.
++	 * camellia (MT6833) has none of the Qualcomm GCC/TLMM/SE7 blocks
++	 * this driver uses; the MT6833 Novatek probe takes over when asked.
 +	 */
 +	if (PE_parse_boot_argn("sweettouchmtk", &mtk, sizeof(mtk)) && mtk) {
 +		sweet_touch_mtk_init();

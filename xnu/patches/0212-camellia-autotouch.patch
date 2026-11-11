@@ -134,22 +134,24 @@ diff --git a/bsd/conf/files b/bsd/conf/files
  bsd/dev/sweet_rpmh.c			standard
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_usb.c			standard
-diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
---- a/bsd/dev/sweet_ufs.c
-+++ b/bsd/dev/sweet_ufs.c
-@@ -87,6 +87,7 @@
- extern void sweet_sample_start(void);
- extern void sweet_keys_init(void);
- extern void sweet_touch_init(void);
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -20,6 +20,7 @@
+ extern kern_return_t thread_terminate(thread_t);
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
 +extern void sweet_autotouch_init(void);
- extern void sweet_usb_probe(void);
+ void sweet_touch_init(void);
  
- #define REG_CAP         0x00
-@@ -697,6 +698,7 @@
- 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
- 	sweet_keys_init();
- 	sweet_touch_init();
+ #define TOUCH_SE_PA      0x00a84000u
+@@ -640,6 +641,9 @@
+ {
+ 	int enabled = 1;
+ 	thread_t thread;
++
++	/* Synthetic touch (0212) starts where the input drivers do. */
 +	sweet_autotouch_init();
- 	sweet_usb_probe();
- 	return 0;
- }
+ 	if (st.started) {
+ 		return;
+ 	}
