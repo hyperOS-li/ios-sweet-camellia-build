@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/sweet_autotouch.c b/bsd/dev/sweet_autotouch.c
+--- a/bsd/dev/sweet_autotouch.c
++++ b/bsd/dev/sweet_autotouch.c
+@@ -43,17 +43,20 @@
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
+-/* Swipe up from the home bar to dismiss the lock screen. */
++/* Swipe up from the very bottom edge.  SweetHIDTouch sets FromEdgeTip only
++ * when a contact starts within 48 px of a panel edge, and UIKit derives the
++ * home gesture from that bit: starting at y=2300 is too far away. */
+ static void
+ sweet_autotouch_swipe(void)
+ {
+ 	printf("SWEET AUTOTOUCH: swipe\n");
+-	sweet_hid_touch(0, 1, 540, 2300);
+-	for (int y = 2240; y >= 1200; y -= 80) {
+-		delay(12000);
++	sweet_hid_touch(0, 1, 540, 2390);
++	delay(40000);
++	for (int y = 2380; y >= 1300; y -= 60) {
++		delay(10000);
+ 		sweet_hid_touch(0, 1, 540, y);
+ 	}
+-	delay(12000);
++	delay(20000);
+ 	sweet_hid_touch(0, 0, 540, 1200);
+ }
+ 
+@@ -93,6 +96,16 @@
+ 	delay(60000);
+ 	sweet_hid_key(1, 0);
+ 
++	/* Lock-screen buttons: tapping either is visible proof that digitizer
++	 * events themselves are consumed (flashlight toggles, camera opens). */
++	printf("SWEET AUTOTOUCH: digitizer proof\n");
++	sweet_autotouch_tap(160, 2280);
++	sweet_autotouch_sleep(2000);
++	sweet_autotouch_tap(160, 2280);
++	sweet_autotouch_sleep(2000);
++	sweet_autotouch_tap(920, 2280);
++	sweet_autotouch_sleep(3000);
++
+ 	for (int i = 0; i < 30; i++) {
+ 		sweet_autotouch_swipe();
+ 		sweet_autotouch_sleep(2000);
