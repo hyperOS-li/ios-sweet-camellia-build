@@ -1,0 +1,12 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -799,7 +799,7 @@
+ 		int hid = 1;
+ 
+ 		(void)PE_parse_boot_argn("sweettouchhid", &hid, sizeof(hid));
+-		st.page = NVT_EVENT;
++		st.page = 0x22D00u;	/* NT36675 event page, not the probe candidate */
+ 		if (hid) {
+ 			touch_hid_loop();
+ 			goto out;
