@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * Register model and bit-bang timing are taken from the working
+@@ -466,11 +466,35 @@
+ 	nvt_write_le(0x3F104, sec[1].crc, 4);
+ 
+ 	st.fw_stage = 4;
+-	nvt_read(0x3F30E, &v, 1);
+-	nvt_write8(0x3F30E, (uint8_t)(v | 0x80));
+-	nvt_write8(0x22D60, 0x00);
+-	nvt_write8(0x22D50, 0xAE);
+-	nvt_write8(0x3F10D, 0x01);
++	{
++		int crc_en = 0;
++		uint8_t crcf = 0, rilm[4] = { 0 }, rdlm[4] = { 0 }, st;
++
++		(void)PE_parse_boot_argn("sweetmtkcrc", &crc_en, sizeof(crc_en));
++		printf("SWEET TOUCH MTK: fw crc_en=%d\n", crc_en);
++		if (crc_en) {
++			nvt_read(0x3F30E, &v, 1);
++			nvt_write8(0x3F30E, (uint8_t)(v | 0x80));
++		}
++		nvt_write8(0x22D60, 0x00);
++		if (crc_en) {
++			nvt_write8(0x22D50, 0xAE);
++		}
++		nvt_write8(0x3F10D, 0x01);
++		delay(5 * 1000);
++		nvt_read(0x3F133, &crcf, 1);
++		nvt_read(0x3F120, rilm, 4);
++		nvt_read(0x3F124, rdlm, 4);
++		printf("SWEET TOUCH MTK: fw crc flags=%02x ilm=%02x%02x%02x%02x/%08x "
++		    "dlm=%02x%02x%02x%02x/%08x\n", crcf,
++		    rilm[0], rilm[1], rilm[2], rilm[3], sec[0].crc,
++		    rdlm[0], rdlm[1], rdlm[2], rdlm[3], sec[1].crc);
++		for (int k = 0; k < 5; k++) {
++			nvt_read(0x22D60, &st, 1);
++			printf("SWEET TOUCH MTK: fw state[%d]=%02x\n", k, st);
++			delay(100 * 1000);
++		}
++	}
+ 	delay(5 * 1000);
+ 	for (i = 0; i < 100; i++) {
+ 		nvt_read(0x22D60, &v, 1);
