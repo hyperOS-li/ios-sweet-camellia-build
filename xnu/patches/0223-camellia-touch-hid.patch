@@ -1,0 +1,135 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -92,6 +92,12 @@
+ 
+ static int touch_chan;
+ 
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++
++static uint8_t hid_down[10];
++static uint16_t hid_last_x[10], hid_last_y[10];
++static unsigned hid_events;
++
+ static uint32_t
+ g_rd(vm_offset_t base, uint32_t off)
+ {
+@@ -571,6 +577,101 @@
+ 	return 0;
+ }
+ 
++/* One 65-byte Novatek report -> 10 fingers -> SweetHID digitizer. */
++static void
++touch_hid_frame(const uint8_t *rep)
++{
++	uint8_t seen[10] = { 0 };
++	unsigned i;
++	bool idle = true;
++
++	for (i = 0; i < 6; i++) {
++		if (rep[i] != 0x77 && rep[i] != 0xFD && rep[i] != 0xFE) {
++			idle = false;
++			break;
++		}
++	}
++	if (idle) {
++		for (i = 0; i < 10; i++) {
++			if (hid_down[i]) {
++				sweet_hid_touch((int)i, 0, hid_last_x[i], hid_last_y[i]);
++				hid_down[i] = 0;
++			}
++		}
++		return;
++	}
++
++	for (i = 0; i < 10; i++) {
++		const uint8_t *p = rep + i * 6;
++		unsigned id = p[0] >> 3;
++		unsigned state = p[0] & 0x07;
++		unsigned x, y;
++
++		if (id == 0 || id > 10 || (state != 1 && state != 2)) {
++			continue;
++		}
++		x = ((unsigned)p[1] << 4) | (p[3] >> 4);
++		y = ((unsigned)p[2] << 4) | (p[3] & 0x0F);
++		if (x > 1079 || y > 2399) {
++			continue;
++		}
++		seen[id - 1] = 1;
++		if (!hid_down[id - 1]) {
++			hid_down[id - 1] = 1;
++			hid_events++;
++			printf("SWEET TOUCH HID: down finger=%u at %u,%u\n",
++			    id - 1, x, y);
++		}
++		hid_last_x[id - 1] = (uint16_t)x;
++		hid_last_y[id - 1] = (uint16_t)y;
++		sweet_hid_touch((int)(id - 1), 1, (int)x, (int)y);
++	}
++
++	for (i = 0; i < 10; i++) {
++		if (hid_down[i] && !seen[i]) {
++			sweet_hid_touch((int)i, 0, hid_last_x[i], hid_last_y[i]);
++			hid_down[i] = 0;
++			hid_events++;
++			printf("SWEET TOUCH HID: up finger=%u at %u,%u\n",
++			    i, hid_last_x[i], hid_last_y[i]);
++		}
++	}
++}
++
++static void
++touch_hid_loop(void)
++{
++	unsigned poll_ms = 10, secs = 1800;
++	uint8_t rep[NVT_REPORT_LEN];
++
++	(void)PE_parse_boot_argn("sweettouchpoll", &poll_ms, sizeof(poll_ms));
++	(void)PE_parse_boot_argn("sweettouchsecs", &secs, sizeof(secs));
++	if (poll_ms < 4 || poll_ms > 500) {
++		poll_ms = 10;
++	}
++	if (secs > 3600) {
++		secs = 3600;
++	}
++	printf("SWEET TOUCH HID: polling page %05x every %u ms\n", st.page,
++	    poll_ms);
++	for (unsigned t = 0; t < secs * 1000u && !st.dead; t += poll_ms) {
++		nvt_read(st.page, rep, NVT_REPORT_LEN);
++		touch_hid_frame(rep);
++		if ((st.passes % 300) == 0) {
++			printf("SWEET TOUCH HID: pass %u rep %02x%02x%02x%02x "
++			    "down=%u%u%u%u%u%u%u%u%u%u events=%u\n", st.passes,
++			    rep[0], rep[1], rep[2], rep[3],
++			    hid_down[0], hid_down[1], hid_down[2], hid_down[3],
++			    hid_down[4], hid_down[5], hid_down[6], hid_down[7],
++			    hid_down[8], hid_down[9], hid_events);
++		}
++		st.passes++;
++		touch_wait(poll_ms);
++	}
++	printf("SWEET TOUCH HID: loop done after %u frames, %u events\n",
++	    st.passes, hid_events);
++}
++
+ static void
+ touch_probe_once(void)
+ {
+@@ -694,6 +795,16 @@
+ 		printf("SWEET TOUCH MTK: fw boot result=%d stage=%u\n",
+ 		    st.fw_result, st.fw_stage);
+ 	}
++	if (st.fw_result == 0) {
++		int hid = 1;
++
++		(void)PE_parse_boot_argn("sweettouchhid", &hid, sizeof(hid));
++		st.page = NVT_EVENT;
++		if (hid) {
++			touch_hid_loop();
++			goto out;
++		}
++	}
+ 
+ 	printf("SWEET TOUCH MTK: gpio mi=%u/%u/%u/%u mo=%u/%u/%u/%u "
+ 	    "irq=%u/%u/%u/%u rst=%u/%u/%u/%u clk=%u/%u/%u/%u cs=%u/%u/%u/%u\n",
