@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -87,6 +87,7 @@
+ 	unsigned passes;
+ 	int fw_result;
+ 	unsigned fw_stage;
++	unsigned fw_pid;
+ } st;
+ 
+ static int touch_chan;
+@@ -440,6 +441,20 @@
+ 
+ 	/* Put the chip into its bootloader and adopt it. */
+ 	st.fw_stage = 2;
++	{
++		int rstp = 0;
++
++		(void)PE_parse_boot_argn("sweetmtkrst", &rstp, sizeof(rstp));
++		if (rstp) {
++			pin_mode(PIN_RST, 0);
++			pin_dir(PIN_RST, true);
++			pin_out(PIN_RST, false);
++			delay(10 * 1000);
++			pin_out(PIN_RST, true);
++			delay(10 * 1000);
++			printf("SWEET TOUCH MTK: fw reset pulse done\n");
++		}
++	}
+ 	nvt_write8(0x3F0FE, 0x69);
+ 	delay(5 * 1000);
+ 	nvt_write8(0x3F310, 0x00);
+@@ -456,6 +471,39 @@
+ 	}
+ 	st.fw_stage = 3;
+ 	printf("SWEET TOUCH MTK: fw written, setting crc banks\n");
++	{
++		unsigned bad = 0, first = 0, checked = 0;
++
++		for (i = 0; i < nsec; i++) {
++			uint8_t rb[32];
++			unsigned offs[3];
++			unsigned n = sec[i].size ? 32 : 0;
++
++			if (!n) {
++				continue;
++			}
++			if (n > sec[i].size) {
++				n = sec[i].size;
++			}
++			offs[0] = 0;
++			offs[1] = sec[i].size > n ? (sec[i].size - n) / 2 : 0;
++			offs[2] = sec[i].size > n ? sec[i].size - n : 0;
++			for (int k = 0; k < 3; k++) {
++				nvt_read(sec[i].sram + offs[k], rb, n);
++				checked++;
++				for (unsigned j = 0; j < n; j++) {
++					if (rb[j] != fwbuf[sec[i].src + offs[k] + j]) {
++						if (!bad) {
++							first = sec[i].sram + offs[k] + j;
++						}
++						bad++;
++					}
++				}
++			}
++		}
++		printf("SWEET TOUCH MTK: fw verify checked=%u bad=%u first=%06x\n",
++		    checked, bad, first);
++	}
+ 
+ 	/* ILM/DLM descriptors, lengths and CRCs (hw_crc = 2, 3-byte length). */
+ 	nvt_write_le(0x3F128, sec[0].sram, 3);
+@@ -518,8 +566,8 @@
+ 	}
+ 	st.fw_stage = 7;
+ 	nvt_read(0x22D9A, pid, 2);
+-	printf("SWEET TOUCH MTK: fw pid=%04x\n",
+-	    (unsigned)((pid[1] << 8) | pid[0]));
++	st.fw_pid = (unsigned)((pid[1] << 8) | pid[0]);
++	printf("SWEET TOUCH MTK: fw pid=%04x\n", st.fw_pid);
+ 	return 0;
+ }
+ 
+@@ -556,12 +604,12 @@
+ 		nvt_read(st.page + NVT_EVENT_FWINFO, info, NVT_FWINFO_LEN);
+ 		nvt_read(st.page, report, NVT_REPORT_LEN);
+ 		printf("SWEET TOUCH MTK: pass %u trim %02x%02x%02x%02x%02x%02x "
+-		    "irq=%u rst=%02x host=%02x hs=%02x page=%05x fw=%d/%u info "
+-		    "%02x%02x%02x%02x %02x%02x %02x%02x rep %02x%02x%02x%02x nz=%u\n",
++		    "irq=%u rst=%02x host=%02x hs=%02x page=%05x pid=%04x fw=%d/%u info "
++		    "%02x%02x%02x%02x %02x%02x %02x%02x rep %02x%02x%02x%02x%02x%02x%02x%02x nz=%u\n",
+ 		    st.passes, trim[0], trim[1], trim[2], trim[3], trim[4], trim[5],
+-		    irq, state[16], state[0], state[1], st.page, st.fw_result, st.fw_stage,
++		    irq, state[16], state[0], state[1], st.page, st.fw_pid, st.fw_result, st.fw_stage,
+ 		    info[0], info[1], info[2], info[3], info[4], info[5], info[6],
+-		    info[7], report[0], report[1], report[2], report[3],
++		    info[7], report[0], report[1], report[2], report[3], report[4], report[5], report[6], report[7],
+ 		    nonzero_bytes(report, NVT_REPORT_LEN));
+ 	} else {
+ 		printf("SWEET TOUCH MTK: pass %u trim %02x%02x%02x%02x%02x%02x "
