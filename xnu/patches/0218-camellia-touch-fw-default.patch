@@ -1,0 +1,38 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * Register model and bit-bang timing are taken from the working
+@@ -542,12 +542,16 @@
+ 	unsigned delay_s = 30, secs = 1800, period_ms = 2000;
+ 	int half_us = 2;
+ 	int fwboot = 0;
++	int fwseen = 0;
+ 
+ 	(void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+ 	(void)PE_parse_boot_argn("sweettouchsecs", &secs, sizeof(secs));
+ 	(void)PE_parse_boot_argn("sweettouchperiod", &period_ms, sizeof(period_ms));
+ 	(void)PE_parse_boot_argn("sweetmtkdelay", &half_us, sizeof(half_us));
+-	(void)PE_parse_boot_argn("sweetmtkfw", &fwboot, sizeof(fwboot));
++	fwseen = PE_parse_boot_argn("sweetmtkfw", &fwboot, sizeof(fwboot));
++	if (!fwseen) {
++		fwboot = 1;	/* probe build: boot the firmware unless told not to */
++	}
+ 	if (delay_s > 600) {
+ 		delay_s = 600;
+ 	}
+@@ -562,8 +566,8 @@
+ 	}
+ 	st.half_us = half_us;
+ 
+-	printf("SWEET TOUCH MTK: starting in %u s, half-clock %d us\n",
+-	    delay_s, st.half_us);
++	printf("SWEET TOUCH MTK: starting in %u s, half-clock %d us, fwboot=%d seen=%d\n",
++	    delay_s, st.half_us, fwboot, fwseen);
+ 	touch_wait(delay_s * 1000u);
+ 	if (st.dead) {
+ 		goto out;
