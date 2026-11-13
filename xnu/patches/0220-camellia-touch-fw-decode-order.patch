@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * Register model and bit-bang timing are taken from the working
+@@ -424,12 +424,15 @@
+ 	uint8_t v = 0;
+ 	int nsec = 0, i;
+ 
++	if (fw_decode()) {
++		return -2;
++	}
++	st.fw_stage = 1;
+ 	if (fwbuf[0x1FFFD] != 'N' || fwbuf[0x1FFFE] != 'V' ||
+ 	    fwbuf[0x1FFFF] != 'T') {
+ 		return -1;
+ 	}
+-	st.fw_stage = 1;
+-	if (fw_decode() || fw_parse(sec, &nsec)) {
++	if (fw_parse(sec, &nsec)) {
+ 		return -2;
+ 	}
+ 	printf("SWEET TOUCH MTK: fw sections=%d ilm=%#x/%#x dlm=%#x/%#x\n",
