@@ -1,0 +1,163 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * The touch controller sits on SPI4 (0x11018000, CS0) with its pins on
+@@ -60,13 +60,14 @@
+ #define GPIO_DO(pin)		(0x100u + (pin) * 0x10u)
+ #define GPIO_DI(pin)		(0x200u + (pin) * 0x10u)
+ 
+-/* iocfg pad registers: IES / PU / PD as (offset, bit) pairs. */
+-#define PAD_IES_MI		0x11E60090u, 11
+-#define PAD_PD_MI		0x11E600B0u, 11
+-#define PAD_PU_MI		0x11E600D0u, 11
+-#define PAD_IES_IRQ		0x11E20050u, 2
+-#define PAD_PD_IRQ		0x11E20060u, 2
+-#define PAD_PU_IRQ		0x11E20080u, 2
++/* iocfg pad registers, relative to the mapped iocfg base:
++ * st.bl = ml_io_map(0x11E60000), st.lm = ml_io_map(0x11E20000). */
++#define PAD_IES_MI		0x0090u, 11
++#define PAD_PD_MI		0x00B0u, 11
++#define PAD_PU_MI		0x00D0u, 11
++#define PAD_IES_IRQ		0x0050u, 2
++#define PAD_PD_IRQ		0x0060u, 2
++#define PAD_PU_IRQ		0x0080u, 2
+ 
+ /* Novatek addresses (nova36672c/nt36xxx.h). */
+ #define NVT_CHIP_TRIM		0x03F004u
+@@ -78,6 +79,8 @@
+ 	vm_offset_t gpio, lm, bl;
+ 	int started, dead;
+ 	int half_us;
++	int cpol;		/* SPI mode: 0 = mode 0, 1 = mode 3 */
++	unsigned mode_tries;
+ 	uint32_t page;
+ 	unsigned passes;
+ } st;
+@@ -161,25 +164,37 @@
+ spi_cs(bool low)
+ {
+ 	pin_out(PIN_CS, low ? false : true);
+-	if (!low) {
+-		delay(st.half_us);
+-	}
+-}
+-
+-/* SPI mode 0, MSB first.  MOSI changes on the falling edge, MISO is sampled
+- * on the rising edge. */
++	/* Put the clock at its idle level while CS changes. */
++	pin_out(PIN_CLK, st.cpol ? true : false);
++	delay(st.half_us);
++}
++
++/* MSB first.  Mode 0 (cpol=0): idle low, data changes while low, sampled on
++ * the rising edge.  Mode 3 (cpol=1): idle high, data changes on the falling
++ * edge, sampled on the rising edge. */
+ static uint8_t
+ spi_xfer(uint8_t out)
+ {
+ 	uint8_t in = 0;
+ 
+ 	for (int i = 7; i >= 0; i--) {
+-		pin_out(PIN_MO, ((out >> i) & 1u) != 0);
+-		delay(st.half_us);
+-		pin_out(PIN_CLK, true);
+-		delay(st.half_us);
+-		in = (uint8_t)((in << 1) | (pin_in(PIN_MI) ? 1u : 0u));
+-		pin_out(PIN_CLK, false);
++		bool bit = ((out >> i) & 1u) != 0;
++
++		if (st.cpol) {
++			pin_out(PIN_CLK, false);
++			pin_out(PIN_MO, bit);
++			delay(st.half_us);
++			pin_out(PIN_CLK, true);
++			delay(st.half_us);
++			in = (uint8_t)((in << 1) | (pin_in(PIN_MI) ? 1u : 0u));
++		} else {
++			pin_out(PIN_MO, bit);
++			delay(st.half_us);
++			pin_out(PIN_CLK, true);
++			delay(st.half_us);
++			in = (uint8_t)((in << 1) | (pin_in(PIN_MI) ? 1u : 0u));
++			pin_out(PIN_CLK, false);
++		}
+ 	}
+ 	return in;
+ }
+@@ -239,6 +254,18 @@
+ 	return true;
+ }
+ 
++static bool
++trim_ok(const uint8_t *t)
++{
++	/* Novatek trim ids end in 0x03 and are not all zero/FF.  If this does
++	 * not look like a chip id the SPI mode is probably wrong. */
++	if (t[5] != 0x03) {
++		return false;
++	}
++	return !(t[0] == 0x00 && t[1] == 0x00 && t[2] == 0x00 &&
++	    t[3] == 0x00 && t[4] == 0x00);
++}
++
+ static void
+ touch_probe_once(void)
+ {
+@@ -250,6 +277,17 @@
+ 	unsigned npages = sizeof(pages) / sizeof(pages[0]);
+ 
+ 	nvt_read(NVT_CHIP_TRIM, trim, 6);
++	if (!trim_ok(trim) && st.mode_tries < 4) {
++		st.cpol ^= 1;
++		st.mode_tries++;
++		printf("SWEET TOUCH MTK: trim %02x %02x %02x %02x %02x %02x "
++		    "bad, trying SPI mode %d\n", trim[0], trim[1], trim[2],
++		    trim[3], trim[4], trim[5], st.cpol ? 3 : 0);
++		nvt_read(NVT_CHIP_TRIM, trim, 6);
++	}
++	if (trim_ok(trim)) {
++		st.mode_tries = 100;	/* lock the working mode */
++	}
+ 
+ 	if (st.page == 0) {
+ 		for (unsigned i = 0; i < npages; i++) {
+@@ -269,17 +307,19 @@
+ 		nvt_read(st.page + NVT_EVENT_FWINFO, info, NVT_FWINFO_LEN);
+ 		nvt_read(st.page, report, NVT_REPORT_LEN);
+ 		printf("SWEET TOUCH MTK: pass %u trim %02x%02x%02x%02x%02x%02x "
+-		    "irq=%u page=%05x info %02x%02x%02x%02x %02x%02x %02x%02x "
++		    "irq=%u mode=%d page=%05x info %02x%02x%02x%02x %02x%02x %02x%02x "
+ 		    "fwnz=%u rep %02x%02x%02x%02x repnz=%u\n", st.passes,
+ 		    trim[0], trim[1], trim[2], trim[3], trim[4], trim[5], irq,
+-		    st.page, info[0], info[1], info[2], info[3], info[4], info[5],
+-		    info[6], info[7], nonzero_bytes(info, NVT_FWINFO_LEN),
++		    st.cpol ? 3 : 0, st.page, info[0], info[1], info[2], info[3],
++		    info[4], info[5], info[6], info[7],
++		    nonzero_bytes(info, NVT_FWINFO_LEN),
+ 		    report[0], report[1], report[2], report[3],
+ 		    nonzero_bytes(report, NVT_REPORT_LEN));
+ 	} else {
+ 		printf("SWEET TOUCH MTK: pass %u trim %02x%02x%02x%02x%02x%02x "
+-		    "irq=%u page=none (no FWINFO match)\n", st.passes,
+-		    trim[0], trim[1], trim[2], trim[3], trim[4], trim[5], irq);
++		    "irq=%u mode=%d page=none (no FWINFO match)\n", st.passes,
++		    trim[0], trim[1], trim[2], trim[3], trim[4], trim[5], irq,
++		    st.cpol ? 3 : 0);
+ 	}
+ 	st.passes++;
+ }
+@@ -330,6 +370,9 @@
+ 	    g_rd(st.gpio, GPIO_MODE(PIN_RST)) & 0xFu,
+ 	    g_rd(st.gpio, GPIO_MODE(PIN_CLK)) & 0xFu,
+ 	    g_rd(st.gpio, GPIO_MODE(PIN_CS)) & 0xFu);
++
++	printf("SWEET TOUCH MTK: mmio gpio=%p lm=%p bl=%p\n",
++	    (void *)st.gpio, (void *)st.lm, (void *)st.bl);
+ 
+ 	/* Output latches first, then mux to GPIO, then directions. */
+ 	pin_out(PIN_CS, true);
