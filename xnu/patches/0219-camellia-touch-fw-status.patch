@@ -1,0 +1,99 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -85,6 +85,8 @@
+ 	int half_us;
+ 	uint32_t page;
+ 	unsigned passes;
++	int fw_result;
++	unsigned fw_stage;
+ } st;
+ 
+ static int touch_chan;
+@@ -426,6 +428,7 @@
+ 	    fwbuf[0x1FFFF] != 'T') {
+ 		return -1;
+ 	}
++	st.fw_stage = 1;
+ 	if (fw_decode() || fw_parse(sec, &nsec)) {
+ 		return -2;
+ 	}
+@@ -433,6 +436,7 @@
+ 	    nsec, sec[0].sram, sec[0].size, sec[1].sram, sec[1].size);
+ 
+ 	/* Put the chip into its bootloader and adopt it. */
++	st.fw_stage = 2;
+ 	nvt_write8(0x3F0FE, 0x69);
+ 	delay(5 * 1000);
+ 	nvt_write8(0x3F310, 0x00);
+@@ -447,6 +451,7 @@
+ 			nvt_write_section(&sec[i]);
+ 		}
+ 	}
++	st.fw_stage = 3;
+ 	printf("SWEET TOUCH MTK: fw written, setting crc banks\n");
+ 
+ 	/* ILM/DLM descriptors, lengths and CRCs (hw_crc = 2, 3-byte length). */
+@@ -457,6 +462,7 @@
+ 	nvt_write_le(0x3F100, sec[0].crc, 4);
+ 	nvt_write_le(0x3F104, sec[1].crc, 4);
+ 
++	st.fw_stage = 4;
+ 	nvt_read(0x3F30E, &v, 1);
+ 	nvt_write8(0x3F30E, (uint8_t)(v | 0x80));
+ 	nvt_write8(0x22D60, 0x00);
+@@ -470,10 +476,12 @@
+ 		}
+ 		delay(10 * 1000);
+ 	}
++	st.fw_stage = 5;
+ 	printf("SWEET TOUCH MTK: fw reset state=%02x tries=%d\n", v, i);
+ 	if (v < 0xA0 || v > 0xAF) {
+ 		return -4;
+ 	}
++	st.fw_stage = 6;
+ 	nvt_read(0x22D78, info, 12);
+ 	printf("SWEET TOUCH MTK: fw info %02x %02x %02x %02x %02x%02x %02x%02x\n",
+ 	    info[0], info[1], info[2], info[3], info[4], info[5], info[6],
+@@ -481,6 +489,7 @@
+ 	if ((uint8_t)(info[0] + info[1]) != 0xFF) {
+ 		return -5;
+ 	}
++	st.fw_stage = 7;
+ 	nvt_read(0x22D9A, pid, 2);
+ 	printf("SWEET TOUCH MTK: fw pid=%04x\n",
+ 	    (unsigned)((pid[1] << 8) | pid[0]));
+@@ -520,10 +529,10 @@
+ 		nvt_read(st.page + NVT_EVENT_FWINFO, info, NVT_FWINFO_LEN);
+ 		nvt_read(st.page, report, NVT_REPORT_LEN);
+ 		printf("SWEET TOUCH MTK: pass %u trim %02x%02x%02x%02x%02x%02x "
+-		    "irq=%u rst=%02x host=%02x hs=%02x page=%05x info "
++		    "irq=%u rst=%02x host=%02x hs=%02x page=%05x fw=%d/%u info "
+ 		    "%02x%02x%02x%02x %02x%02x %02x%02x rep %02x%02x%02x%02x nz=%u\n",
+ 		    st.passes, trim[0], trim[1], trim[2], trim[3], trim[4], trim[5],
+-		    irq, state[16], state[0], state[1], st.page,
++		    irq, state[16], state[0], state[1], st.page, st.fw_result, st.fw_stage,
+ 		    info[0], info[1], info[2], info[3], info[4], info[5], info[6],
+ 		    info[7], report[0], report[1], report[2], report[3],
+ 		    nonzero_bytes(report, NVT_REPORT_LEN));
+@@ -565,6 +574,7 @@
+ 		half_us = 2;
+ 	}
+ 	st.half_us = half_us;
++	st.fw_result = 99;
+ 
+ 	printf("SWEET TOUCH MTK: starting in %u s, half-clock %d us, fwboot=%d seen=%d\n",
+ 	    delay_s, st.half_us, fwboot, fwseen);
+@@ -605,9 +615,9 @@
+ 	pad_set(st.lm, PAD_IES_IRQ, true);
+ 
+ 	if (fwboot) {
+-		int fwret = nvt_boot_fw();
+-
+-		printf("SWEET TOUCH MTK: fw boot result=%d\n", fwret);
++		st.fw_result = nvt_boot_fw();
++		printf("SWEET TOUCH MTK: fw boot result=%d stage=%u\n",
++		    st.fw_result, st.fw_stage);
+ 	}
+ 
+ 	printf("SWEET TOUCH MTK: gpio mi=%u/%u/%u/%u mo=%u/%u/%u/%u "
