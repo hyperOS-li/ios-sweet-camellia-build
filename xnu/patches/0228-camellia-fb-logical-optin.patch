@@ -1,6 +1,12 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * Built-in IOMobileFramebuffer for SWEET: the ABL's continuous-splash
+  * framebuffer (1080x2400 a8r8g8b8 in RAM, the panel scans it out by
+  * itself) as the main display, driven by CoreAnimation's CPU renderer.
 @@ -146,6 +146,7 @@
  	uint32_t      fWidth, fHeight, fRowBytes;
  	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
@@ -24,8 +30,8 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 -	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
 -	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
 +	if (!native) {
-+		fLogicalW = scaled ? 750 : SWEET_FB_LOGICAL_W;
-+		fLogicalH = scaled ? 1624 : SWEET_FB_LOGICAL_H;
++		fLogicalW = scaled ? 828 : SWEET_FB_LOGICAL_W;
++		fLogicalH = scaled ? 1792 : SWEET_FB_LOGICAL_H;
 +	}
 +	fScaled = (fLogicalW != (uint32_t)fWidth || fLogicalH != (uint32_t)fHeight);
 +	if (fScaled) {
@@ -102,6 +108,12 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * SWEET: HID event services for the iOS userland (backboardd's HID event
+  * system).
+  *
 @@ -368,6 +368,7 @@
  private:
  	IOLock *fLock;
@@ -120,8 +132,8 @@ diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.c
 +
 +	PE_parse_boot_argn("sweetfblogical", &scaled, sizeof(scaled));
 +	fScaled = scaled != 0;
-+	fLogicalW = native ? 1080 : (scaled ? 750 : 1125);
-+	fLogicalH = native ? 2400 : (scaled ? 1624 : 2436);
++	fLogicalW = native ? 1080 : (scaled ? 828 : 1125);
++	fLogicalH = native ? 2400 : (scaled ? 1792 : 2436);
  	fOffX = (fLogicalW - 1080) / 2;
  	fOffY = (fLogicalH - 2400) / 2;
  	/* The digitizer covers the main display (backboardd maps it 1:1). */
