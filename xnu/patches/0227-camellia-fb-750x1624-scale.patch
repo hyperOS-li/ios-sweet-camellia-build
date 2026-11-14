@@ -1,0 +1,134 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -84,8 +84,8 @@
+  * centered 1080x2400 part of it is shown on the 1080x2400 panel.
+  * Boot-arg sweetfb_native=1 presents the real panel size instead.
+  */
+-#define SWEET_FB_LOGICAL_W              1125
+-#define SWEET_FB_LOGICAL_H              2436
++#define SWEET_FB_LOGICAL_W              750
++#define SWEET_FB_LOGICAL_H              1624
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ /* 0 = not started, 1 = running, <0 = failed stage (see AppleCLCD::start). */
+@@ -146,6 +146,7 @@
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+ 	int32_t       fOffX, fOffY;             /* logical origin of the panel */
++	bool          fScaled;                  /* logical != panel: scale in present */
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+@@ -249,12 +250,19 @@
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
+-	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
++	if (!native) {
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
+ 	}
+-	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+-	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	fScaled = (fLogicalW != (uint32_t)fWidth || fLogicalH != (uint32_t)fHeight);
++	if (fScaled) {
++		fOffX = fOffY = 0;
++		IOLog("SWEET FB: logical %ux%u scaled to %ux%u\n",
++		    fLogicalW, fLogicalH, fWidth, fHeight);
++	} else {
++		fOffX = (int32_t)(fLogicalW - fWidth) / 2;
++		fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -505,6 +513,59 @@
+ 		}
+ 		if (dx < 0 || dy < 0) {
+ 			dx = dy = 0;
++		}
++		if (fScaled) {
++			int32_t dyp, dye, dxp, dxe, dw, dh;
++
++			/* Layer rect is in logical coordinates; clamp to the logical screen. */
++			if (dx >= (int32_t)fLogicalW || dy >= (int32_t)fLogicalH) {
++				s->release();
++				continue;
++			}
++			if (dx + w > (int32_t)fLogicalW) {
++				w = (int32_t)fLogicalW - dx;
++			}
++			if (dy + h > (int32_t)fLogicalH) {
++				h = (int32_t)fLogicalH - dy;
++			}
++			if (sx + w > (int32_t)s->width) {
++				w = (int32_t)s->width - sx;
++			}
++			if (sy + h > (int32_t)s->height) {
++				h = (int32_t)s->height - sy;
++			}
++			dxp = (int32_t)((int64_t)dx * fWidth / fLogicalW);
++			dyp = (int32_t)((int64_t)dy * fHeight / fLogicalH);
++			dxe = (int32_t)((int64_t)(dx + w) * fWidth / fLogicalW);
++			dye = (int32_t)((int64_t)(dy + h) * fHeight / fLogicalH);
++			dw = dxe - dxp;
++			dh = dye - dyp;
++			if (w <= 0 || h <= 0 || dw <= 0 || dh <= 0) {
++				s->release();
++				continue;
++			}
++			for (int32_t y = 0; y < dh; y++) {
++				int32_t py = dyp + y;
++				int32_t syy;
++				const uint32_t *srow;
++				uint32_t *drow;
++
++				if (win_len > 0 &&
++				    (py < win_start || py >= win_start + win_len)) {
++					continue;
++				}
++				syy = sy + (int32_t)((int64_t)y * h / dh);
++				srow = (const uint32_t *)(src + s->offset +
++				    (uint64_t)syy * s->bytesPerRow);
++				drow = (uint32_t *)(dst + (uint64_t)py * fRowBytes +
++				    (uint64_t)dxp * 4);
++				for (int32_t x = 0; x < dw; x++) {
++					drow[x] = srow[sx + (int32_t)((int64_t)x * w / dw)];
++				}
++			}
++			OSSynchronizeIO();
++			s->release();
++			continue;
+ 		}
+ 		/* Logical (presented) display coordinates -> panel coordinates. */
+ 		dx -= fOffX;
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -434,10 +434,10 @@
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	fLogicalW = native ? 1080 : 750;
++	fLogicalH = native ? 2400 : 1624;
++	fOffX = 0;
++	fOffY = 0;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -464,8 +464,8 @@
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+ 	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
+-	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+-	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	IOFixed nx = (IOFixed)(((int64_t)x * fLogicalW / 1080) << 16);
++	IOFixed ny = (IOFixed)(((int64_t)y * fLogicalH / 2400) << 16);
+ 	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
+ 		IOLockUnlock(fLock);
