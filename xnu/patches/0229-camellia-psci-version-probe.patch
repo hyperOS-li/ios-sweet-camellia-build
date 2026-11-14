@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * Register model and bit-bang timing are taken from the working
+@@ -713,6 +713,23 @@
+ 	    st.passes, hid_events);
+ }
+ 
++/* PSCI_VERSION probe: SMC #0 with x0 = 0x84000000.  If the platform has no
++ * PSCI/ATF this may hang or trap; only called with sweetpsci=1. */
++static void
++sweet_psci_probe(void)
++{
++	register uint64_t x0 asm("x0") = 0x84000000ULL;
++	register uint64_t x1 asm("x1") = 0;
++	register uint64_t x2 asm("x2") = 0;
++	register uint64_t x3 asm("x3") = 0;
++
++	asm volatile("smc #0"
++	    : "+r"(x0)
++	    : "r"(x1), "r"(x2), "r"(x3)
++	    : "x4", "x5", "x6", "x7", "memory");
++	printf("SWEET PSCI: version=0x%x\n", (unsigned)x0);
++}
++
+ static void
+ touch_probe_once(void)
+ {
+@@ -831,6 +848,16 @@
+ 	pad_set(st.bl, PAD_IES_MI, true);
+ 	pad_set(st.lm, PAD_IES_IRQ, true);
+ 
++	{
++		int psci = 0;
++
++		(void)PE_parse_boot_argn("sweetpsci", &psci, sizeof(psci));
++		if (psci) {
++			printf("SWEET PSCI: probing...\n");
++			sweet_psci_probe();
++			printf("SWEET PSCI: returned\n");
++		}
++	}
+ 	if (fwboot) {
+ 		int check = -99, attempt;
+ 
