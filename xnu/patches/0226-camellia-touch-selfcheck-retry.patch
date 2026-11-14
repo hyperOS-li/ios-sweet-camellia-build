@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+  * camellia (MT6833 / Dimensity 700) Novatek NT36672C touch probe.
+  *
+  * Register model and bit-bang timing are taken from the working
+@@ -590,6 +590,31 @@
+ 	return 0;
+ }
+ 
++/* Post-boot identity check: FWINFO and PID must be sane. */
++static int
++nvt_check_fw(void)
++{
++	uint8_t info[12] = { 0 };
++	uint8_t pid[2] = { 0 };
++	unsigned fw_pid;
++
++	nvt_read(0x22D78, info, 12);
++	if ((uint8_t)(info[0] + info[1]) != 0xFF) {
++		return -1;
++	}
++	if ((((unsigned)info[4] << 8) | info[5]) != 1080 ||
++	    (((unsigned)info[6] << 8) | info[7]) != 2400) {
++		return -2;
++	}
++	nvt_read(0x22D9A, pid, 2);
++	fw_pid = ((unsigned)pid[1] << 8) | pid[0];
++	st.fw_pid = fw_pid;
++	if (fw_pid != 0x5949) {
++		return -3;
++	}
++	return 0;
++}
++
+ /* One 65-byte Novatek report -> 10 fingers -> SweetHID digitizer. */
+ static void
+ touch_hid_frame(const uint8_t *rep)
+@@ -671,13 +696,15 @@
+ 	for (unsigned t = 0; t < secs * 1000u && !st.dead; t += poll_ms) {
+ 		nvt_read_latched(st.page, rep, NVT_REPORT_LEN);
+ 		touch_hid_frame(rep);
+-		if ((st.passes % 1000) == 0) {
+-			printf("SWEET TOUCH HID: pass %u rep %02x%02x%02x%02x "
+-			    "down=%u%u%u%u%u%u%u%u%u%u events=%u\n", st.passes,
++		if ((st.passes % 500) == 0) {
++			printf("SWEET TOUCH HID: alive frames=%u events=%u "
++			    "fw=%d/%u pid=%04x rep %02x%02x%02x%02x "
++			    "down=%u%u%u%u%u%u%u%u%u%u\n", st.passes,
++			    hid_events, st.fw_result, st.fw_stage, st.fw_pid,
+ 			    rep[0], rep[1], rep[2], rep[3],
+ 			    hid_down[0], hid_down[1], hid_down[2], hid_down[3],
+ 			    hid_down[4], hid_down[5], hid_down[6], hid_down[7],
+-			    hid_down[8], hid_down[9], hid_events);
++			    hid_down[8], hid_down[9]);
+ 		}
+ 		st.passes++;
+ 		touch_wait(poll_ms);
+@@ -805,9 +832,22 @@
+ 	pad_set(st.lm, PAD_IES_IRQ, true);
+ 
+ 	if (fwboot) {
+-		st.fw_result = nvt_boot_fw();
+-		printf("SWEET TOUCH MTK: fw boot result=%d stage=%u\n",
+-		    st.fw_result, st.fw_stage);
++		int check = -99, attempt;
++
++		for (attempt = 0; attempt < 3; attempt++) {
++			st.fw_result = nvt_boot_fw();
++			check = (st.fw_result == 0) ? nvt_check_fw() : -99;
++			printf("SWEET TOUCH MTK: fw boot result=%d stage=%u "
++			    "check=%d attempt=%d\n", st.fw_result,
++			    st.fw_stage, check, attempt + 1);
++			if (st.fw_result == 0 && check == 0) {
++				break;
++			}
++			delay(100 * 1000);
++		}
++		if (check != 0) {
++			st.fw_result = -100;	/* booted but identity check failed */
++		}
+ 	}
+ 	if (st.fw_result == 0) {
+ 		int hid = 1;
