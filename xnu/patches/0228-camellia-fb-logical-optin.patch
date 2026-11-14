@@ -1,17 +1,6 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -84,8 +84,8 @@
-  * centered 1080x2400 part of it is shown on the 1080x2400 panel.
-  * Boot-arg sweetfb_native=1 presents the real panel size instead.
-  */
--#define SWEET_FB_LOGICAL_W              1125
--#define SWEET_FB_LOGICAL_H              2436
-+#define SWEET_FB_LOGICAL_W              750
-+#define SWEET_FB_LOGICAL_H              1624
- #define SWEET_FB_FORMAT_BGRA            0x42475241
- 
- /* 0 = not started, 1 = running, <0 = failed stage (see AppleCLCD::start). */
 @@ -146,6 +146,7 @@
  	uint32_t      fWidth, fHeight, fRowBytes;
  	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
@@ -20,17 +9,24 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
  	IOMemoryMap  *fMap;
  	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
-@@ -249,12 +250,19 @@
+@@ -247,14 +248,23 @@
+ 	}
+ 	int native = 0;
  	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
++	int scaled = 0;
++	PE_parse_boot_argn("sweetfblogical", &scaled, sizeof(scaled));
  	fLogicalW = fWidth;
  	fLogicalH = fHeight;
 -	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
-+	if (!native) {
- 		fLogicalW = SWEET_FB_LOGICAL_W;
- 		fLogicalH = SWEET_FB_LOGICAL_H;
- 	}
+-		fLogicalW = SWEET_FB_LOGICAL_W;
+-		fLogicalH = SWEET_FB_LOGICAL_H;
+-	}
 -	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
 -	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	if (!native) {
++		fLogicalW = scaled ? 750 : SWEET_FB_LOGICAL_W;
++		fLogicalH = scaled ? 1624 : SWEET_FB_LOGICAL_H;
++	}
 +	fScaled = (fLogicalW != (uint32_t)fWidth || fLogicalH != (uint32_t)fHeight);
 +	if (fScaled) {
 +		fOffX = fOffY = 0;
@@ -43,7 +39,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	fLock = IOLockAlloc();
  	fClients = OSArray::withCapacity(4);
  	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
-@@ -505,6 +513,59 @@
+@@ -505,6 +515,59 @@
  		}
  		if (dx < 0 || dy < 0) {
  			dx = dy = 0;
@@ -106,29 +102,32 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp
-@@ -434,10 +434,10 @@
+@@ -434,8 +434,11 @@
  	}
  	int native = 0;
  	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
 -	fLogicalW = native ? 1080 : 1125;
 -	fLogicalH = native ? 2400 : 2436;
--	fOffX = (fLogicalW - 1080) / 2;
--	fOffY = (fLogicalH - 2400) / 2;
-+	fLogicalW = native ? 1080 : 750;
-+	fLogicalH = native ? 2400 : 1624;
-+	fOffX = 0;
-+	fOffY = 0;
++	int scaled = 0;
++
++	PE_parse_boot_argn("sweetfblogical", &scaled, sizeof(scaled));
++	fLogicalW = native ? 1080 : (scaled ? 750 : 1125);
++	fLogicalH = native ? 2400 : (scaled ? 1624 : 2436);
+ 	fOffX = (fLogicalW - 1080) / 2;
+ 	fOffY = (fLogicalH - 2400) / 2;
  	/* The digitizer covers the main display (backboardd maps it 1:1). */
- 	setProperty("DisplayIntegrated", kOSBooleanTrue);
- 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
-@@ -464,8 +464,8 @@
+@@ -464,8 +467,12 @@
  	IOLockLock(fLock);
  	bool was = fDown[finger];
  	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
 -	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
 -	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
-+	IOFixed nx = (IOFixed)(((int64_t)x * fLogicalW / 1080) << 16);
-+	IOFixed ny = (IOFixed)(((int64_t)y * fLogicalH / 2400) << 16);
++	IOFixed nx = scaled ?
++	    (IOFixed)(((int64_t)x * fLogicalW / 1080) << 16) :
++	    (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
++	IOFixed ny = scaled ?
++	    (IOFixed)(((int64_t)y * fLogicalH / 2400) << 16) :
++	    (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
  	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
  	if (was == down && !moved) {
  		IOLockUnlock(fLock);
