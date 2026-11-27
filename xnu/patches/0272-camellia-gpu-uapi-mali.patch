@@ -1,0 +1,853 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1674,6 +1674,765 @@
+ 	return true;
+ }
+ 
++/* ------------------------------------------------------------------ *
++ * v55: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ *
++ * Selector numbers, struct layouts and the size table follow
++ * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
++ * (libdrm-xnu + Mesa Panfrost + Metal plug-in) can be pointed at this
++ * kernel without renumbering.  BO GPU addresses come from 32 MiB to 4 GiB,
++ * which is the range Mesa assumes; the tables themselves are the same
++ * ones the v35 demo built (mali_map_page/mali_unmap_page).
++ *
++ * Submit is SYNCHRONOUS in this first cut: the caller's thread pauses the
++ * background worker, flips AS0 to the translated tables, kicks JS0 (frag)
++ * or JS1 (vertex/tiler/compute) and polls JOB_INT_RAWSTAT before returning.
++ * That keeps ordering trivially correct and reuses only the register
++ * sequence proven on this device since v44.  iOSurface import (14),
++ * syncobj transfer (19), userptr (20), batch submit (21) and the surface
++ * promise (22) stay unsupported for now; syncobjs (9..13) are a minimal
++ * signalled-flag table so Panfrost's out_sync contract can be met.
++ *
++ * Errors returned to the IOKit side (0271 maps them to kIOReturn*):
++ *   0 ok, 1 unsupported, 2 bad argument, 3 no memory, 4 busy,
++ *   5 timeout, 6 gpu fault.
++ * ------------------------------------------------------------------ */
++
++#define MALI_JS0                0x1800u
++
++#define SWEET_UAPI_ERR_OK       0
++#define SWEET_UAPI_ERR_UNSUPP   1
++#define SWEET_UAPI_ERR_BADARG   2
++#define SWEET_UAPI_ERR_NOMEM    3
++#define SWEET_UAPI_ERR_BUSY     4
++#define SWEET_UAPI_ERR_TIMEOUT  5
++#define SWEET_UAPI_ERR_FAULT    6
++
++#define SWEET_UAPI_VA_START     0x02000000ull   /* 32 MiB, Mesa's range */
++#define SWEET_UAPI_VA_END       0x100000000ull  /* 4 GiB */
++#define SWEET_UAPI_BO_MAX       32
++#define SWEET_UAPI_BO_PAGES_MAX 256             /* 4 MiB per BO */
++#define SWEET_UAPI_SYNC_MAX     64
++#define SWEET_UAPI_HANDLES_MAX  8
++
++#define MALI_UAPI_BO_NOEXEC     (1u << 0)
++#define MALI_UAPI_BO_HEAP       (1u << 1)
++#define MALI_UAPI_BO_WB_MMAP    (1u << 2)
++#define MALI_UAPI_JD_REQ_FS     (1u << 0)
++#define MALI_UAPI_SYNCOBJ_CREATE_SIGNALED (1u << 0)
++#define MALI_UAPI_SYNCOBJ_WAIT_ALL (1u << 0)
++#define MALI_UAPI_SYNC_CPU_CACHE_FLUSH 0
++#define MALI_UAPI_SYNC_CPU_CACHE_FLUSH_INVALIDATE 1
++
++enum {
++	MALI_UAPI_SEL_CREATE_BO = 2,
++	MALI_UAPI_SEL_MMAP_BO,
++	MALI_UAPI_SEL_GET_BO_OFFSET,
++	MALI_UAPI_SEL_GEM_CLOSE,
++	MALI_UAPI_SEL_SUBMIT,
++	MALI_UAPI_SEL_WAIT_BO,
++	MALI_UAPI_SEL_MADVISE,
++	MALI_UAPI_SEL_SYNCOBJ_CREATE,
++	MALI_UAPI_SEL_SYNCOBJ_DESTROY,
++	MALI_UAPI_SEL_SYNCOBJ_WAIT,
++	MALI_UAPI_SEL_SYNCOBJ_RESET,
++	MALI_UAPI_SEL_SYNCOBJ_SIGNAL,
++	MALI_UAPI_SEL_IMPORT_IOSURFACE,
++	MALI_UAPI_SEL_SYNC_BO,
++	MALI_UAPI_SEL_QUERY_BO_INFO,
++	MALI_UAPI_SEL_JM_CTX_CREATE,
++	MALI_UAPI_SEL_JM_CTX_DESTROY,
++	MALI_UAPI_SEL_SYNCOBJ_TRANSFER,
++	MALI_UAPI_SEL_IMPORT_USERPTR,
++	MALI_UAPI_SEL_SUBMIT_BATCH,
++	MALI_UAPI_SEL_SURFACE_PROMISE,
++};
++
++/* viva_gpu_uapi.h struct shapes, verbatim. */
++struct mali_uapi_create_bo { uint32_t size, flags, handle, pad; uint64_t offset; };
++struct mali_uapi_mmap_bo { uint32_t handle, flags; uint64_t offset; };
++struct mali_uapi_get_bo_offset { uint32_t handle, pad; uint64_t offset; };
++struct mali_uapi_gem_close { uint32_t handle, pad; };
++struct mali_uapi_submit {
++	uint64_t jc;
++	uint64_t in_syncs;
++	uint32_t in_sync_count;
++	uint32_t out_sync;
++	uint64_t bo_handles;
++	uint32_t bo_handle_count;
++	uint32_t requirements;
++	uint32_t jm_ctx_handle;
++	uint32_t seq;                           /* out: this job's number */
++};
++struct mali_uapi_wait_bo { uint32_t handle, pad; int64_t timeout_ns; };
++struct mali_uapi_madvise { uint32_t handle, madv, retained; };
++struct mali_uapi_syncobj_create { uint32_t handle, flags; };
++struct mali_uapi_syncobj_destroy { uint32_t handle, pad; };
++struct mali_uapi_syncobj_wait {
++	uint64_t handles;
++	int64_t timeout_nsec;
++	uint32_t count_handles, flags;
++	uint32_t first_signaled, pad;
++	uint64_t deadline_nsec;
++};
++struct mali_uapi_syncobj_array { uint64_t handles; uint32_t count_handles, pad; };
++struct mali_uapi_syncobj_transfer { uint32_t src, dst; };
++struct mali_uapi_sync_bo { uint64_t ops; uint32_t op_count, pad; };
++struct mali_uapi_bo_sync_op { uint32_t handle, type, offset, size; };
++struct mali_uapi_query_bo_info { uint32_t handle, extra_flags, create_flags, pad; };
++struct mali_uapi_jm_ctx { uint32_t handle, priority; };
++
++/* Sizes indexed by selector, checked before dispatch (viva's C++ table). */
++static const uint32_t mali_uapi_sel_size[23] = {
++	40,                                      /* 0: vgpu_version (kernel side reads it as such) */
++	16,                                      /* 1: vgpu_get_param */
++	sizeof(struct mali_uapi_create_bo),
++	sizeof(struct mali_uapi_mmap_bo),
++	sizeof(struct mali_uapi_get_bo_offset),
++	sizeof(struct mali_uapi_gem_close),
++	sizeof(struct mali_uapi_submit),
++	sizeof(struct mali_uapi_wait_bo),
++	sizeof(struct mali_uapi_madvise),
++	sizeof(struct mali_uapi_syncobj_create),
++	sizeof(struct mali_uapi_syncobj_destroy),
++	sizeof(struct mali_uapi_syncobj_wait),
++	sizeof(struct mali_uapi_syncobj_array),
++	sizeof(struct mali_uapi_syncobj_array),
++	0,                                       /* 14: import_iosurface -- unsupported */
++	sizeof(struct mali_uapi_sync_bo),
++	sizeof(struct mali_uapi_query_bo_info),
++	sizeof(struct mali_uapi_jm_ctx),
++	sizeof(struct mali_uapi_jm_ctx),
++	sizeof(struct mali_uapi_syncobj_transfer),
++	0,                                       /* 20: import_userptr -- unsupported */
++	0,                                       /* 21: submit_batch -- unsupported */
++	0,                                       /* 22: surface_promise -- unsupported */
++};
++
++struct mali_uapi_bo {
++	int used;
++	uint32_t handle;                         /* slot + 1 */
++	uint32_t flags;
++	vm_size_t size;                          /* bytes, 16K-page multiple */
++	vm_offset_t kva;                         /* kernel virtual base */
++	uint64_t phys[SWEET_UAPI_BO_PAGES_MAX];  /* per-16K-page physical bases */
++	uint32_t pages;
++	uint64_t va;                             /* GPU VA base */
++};
++static struct mali_uapi_bo mali_uapi_bos[SWEET_UAPI_BO_MAX];
++static struct { int used, signalled; } mali_uapi_syncs[SWEET_UAPI_SYNC_MAX];
++static unsigned mali_uapi_bo_count, mali_uapi_sync_count;
++static unsigned mali_uapi_submits, mali_uapi_bad, mali_uapi_last_seq;
++static int mali_uapi_selftest_done, mali_uapi_selftest_ok;
++static volatile int mali_uapi_busy;          /* submit in flight: bg worker waits */
++
++static struct mali_uapi_bo *
++mali_uapi_bo_by_handle(uint32_t handle)
++{
++	if (handle == 0 || handle > SWEET_UAPI_BO_MAX) {
++		return NULL;
++	}
++	if (!mali_uapi_bos[handle - 1].used || mali_uapi_bos[handle - 1].handle != handle) {
++		return NULL;
++	}
++	return &mali_uapi_bos[handle - 1];
++}
++
++static int
++mali_uapi_sync_alive(uint32_t handle)
++{
++	return handle != 0 && handle <= SWEET_UAPI_SYNC_MAX &&
++	    mali_uapi_syncs[handle - 1].used;
++}
++
++static void
++mali_uapi_sync_signal(uint32_t handle)
++{
++	if (mali_uapi_sync_alive(handle)) {
++		mali_uapi_syncs[handle - 1].signalled = 1;
++	}
++}
++
++/* First fit from 32 MiB up to 4 GiB, around the BOs already handed out. */
++static uint64_t
++mali_uapi_va_alloc(vm_size_t bytes)
++{
++	uint64_t need = (bytes + 16383ull) & ~16383ull;
++	uint64_t used_va[SWEET_UAPI_BO_MAX], used_end[SWEET_UAPI_BO_MAX];
++	uint64_t va = SWEET_UAPI_VA_START;
++	int n = 0, i, j;
++
++	for (i = 0; i < SWEET_UAPI_BO_MAX; i++) {
++		if (!mali_uapi_bos[i].used) {
++			continue;
++		}
++		used_va[n] = mali_uapi_bos[i].va;
++		used_end[n] = mali_uapi_bos[i].va + (uint64_t)mali_uapi_bos[i].pages * 16384ull;
++		n++;
++	}
++	for (i = 1; i < n; i++) {
++		uint64_t sv = used_va[i], se = used_end[i];
++		for (j = i - 1; j >= 0 && used_va[j] > sv; j--) {
++			used_va[j + 1] = used_va[j];
++			used_end[j + 1] = used_end[j];
++		}
++		used_va[j + 1] = sv;
++		used_end[j + 1] = se;
++	}
++	for (i = 0; i < n; i++) {
++		if (used_va[i] - va >= need) {
++			return va;
++		}
++		if (used_end[i] > va) {
++			va = used_end[i];
++		}
++	}
++	if (SWEET_UAPI_VA_END - va >= need) {
++		return va;
++	}
++	return 0;
++}
++
++static int
++mali_uapi_bo_alloc(uint32_t size, uint32_t flags, uint32_t *handle, uint64_t *offset)
++{
++	struct mali_uapi_bo *bo;
++	vm_size_t rounded;
++	uint64_t va;
++	uint32_t i, slot, pages;
++	vm_offset_t kva = 0;
++
++	if (size == 0 || size > SWEET_UAPI_BO_PAGES_MAX * 16384u) {
++		return SWEET_UAPI_ERR_BADARG;
++	}
++	if (flags & MALI_UAPI_BO_HEAP) {
++		return SWEET_UAPI_ERR_UNSUPP;        /* tiler heap growth is not modelled yet */
++	}
++	if (mali_uapi_bo_count >= SWEET_UAPI_BO_MAX) {
++		return SWEET_UAPI_ERR_NOMEM;
++	}
++	for (slot = 0; slot < SWEET_UAPI_BO_MAX; slot++) {
++		if (!mali_uapi_bos[slot].used) {
++			break;
++		}
++	}
++	if (slot >= SWEET_UAPI_BO_MAX) {
++		return SWEET_UAPI_ERR_NOMEM;
++	}
++	rounded = (vm_size_t)(((uint64_t)size + 16383ull) & ~16383ull);
++	pages = (uint32_t)(rounded / 16384u);
++	va = mali_uapi_va_alloc(rounded);
++	if (va == 0) {
++		return SWEET_UAPI_ERR_NOMEM;
++	}
++	if (kmem_alloc(kernel_map, &kva, rounded,
++	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		return SWEET_UAPI_ERR_NOMEM;
++	}
++	for (i = 0; i < pages; i++) {
++		uint64_t phys = kvtophys(kva + (uint64_t)i * 16384u);
++		uint32_t sub;
++
++		for (sub = 0; sub < 4; sub++) {
++			if (!mali_map_page(va + (uint64_t)i * 16384u + (uint64_t)sub * 4096u,
++			    phys + (uint64_t)sub * 4096u)) {
++				uint32_t r, s;
++
++				for (r = 0; r < i; r++) {
++					for (s = 0; s < 4; s++) {
++						(void)mali_unmap_page(va + (uint64_t)r * 16384u + (uint64_t)s * 4096u);
++					}
++				}
++				for (s = 0; s < (int)sub; s++) {
++					(void)mali_unmap_page(va + (uint64_t)i * 16384u + (uint64_t)s * 4096u);
++				}
++				kmem_free(kernel_map, kva, rounded);
++				return SWEET_UAPI_ERR_NOMEM;
++			}
++		}
++	}
++	bo = &mali_uapi_bos[slot];
++	bzero(bo, sizeof(*bo));
++	bo->used = 1;
++	bo->handle = slot + 1;
++	bo->flags = flags;
++	bo->size = rounded;
++	bo->kva = kva;
++	bo->pages = pages;
++	bo->va = va;
++	for (i = 0; i < pages; i++) {
++		bo->phys[i] = kvtophys(kva + (uint64_t)i * 16384u);
++	}
++	mali_uapi_bo_count++;
++	*handle = bo->handle;
++	*offset = va;
++	return SWEET_UAPI_ERR_OK;
++}
++
++static int
++mali_uapi_bo_close(uint32_t handle)
++{
++	struct mali_uapi_bo *bo;
++	uint32_t i, sub;
++
++	bo = mali_uapi_bo_by_handle(handle);
++	if (bo == NULL) {
++		return SWEET_UAPI_ERR_BADARG;
++	}
++	if (mali_uapi_busy) {
++		return SWEET_UAPI_ERR_BUSY;          /* nothing dies under an in-flight job */
++	}
++	for (i = 0; i < bo->pages; i++) {
++		for (sub = 0; sub < 4; sub++) {
++			(void)mali_unmap_page(bo->va + (uint64_t)i * 16384u + (uint64_t)sub * 4096u);
++		}
++	}
++	kmem_free(kernel_map, bo->kva, bo->size);
++	bzero(bo, sizeof(*bo));
++	mali_uapi_bo_count--;
++	return SWEET_UAPI_ERR_OK;
++}
++
++/*
++ * The heart of SUBMIT.  Same register dance as mali_run_write_job, but the
++ * job chain lives in userspace-built BOs and the job slot follows the
++ * requirements bit.  AS0 is ours while this runs: the background worker is
++ * paused and identity mode is restored on every exit path.
++ */
++static int
++mali_uapi_submit_internal(uint64_t jc, uint32_t reqs, const uint32_t *handles,
++    uint32_t nhandles, uint32_t out_sync)
++{
++	struct mali_uapi_bo *bos[SWEET_UAPI_HANDLES_MAX];
++	uint32_t js, bit, shader_mask, i;
++	uint32_t status;
++	int done, err = SWEET_UAPI_ERR_OK;
++
++	if (mali_uapi_busy) {
++		return SWEET_UAPI_ERR_BUSY;
++	}
++	if (nhandles > SWEET_UAPI_HANDLES_MAX) {
++		return SWEET_UAPI_ERR_BADARG;
++	}
++	if (mali_pt_top == NULL) {
++		return SWEET_UAPI_ERR_BADARG;        /* nothing has been mapped yet */
++	}
++	if (out_sync != 0 && !mali_uapi_sync_alive(out_sync)) {
++		return SWEET_UAPI_ERR_BADARG;
++	}
++	for (i = 0; i < nhandles; i++) {
++		bos[i] = mali_uapi_bo_by_handle(handles[i]);
++		if (bos[i] == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++	}
++	/* CPU caches: everything is cacheable, so clean to the point of
++	 * coherency before the GPU reads and again before the CPU reads back
++	 * (the v44 readback pattern, device-proven).  MALI_JS_CONFIG also
++	 * flushes the GPU's L2 at both ends of the chain. */
++	for (i = 0; i < nhandles; i++) {
++		FlushPoC_DcacheRegion(bos[i]->kva, bos[i]->size);
++	}
++
++	mali_uapi_busy = 1;
++	js = (reqs & MALI_UAPI_JD_REQ_FS) ? MALI_JS0 : MALI_JS1;
++	bit = (reqs & MALI_UAPI_JD_REQ_FS) ? (1u << 0) : (1u << 1);
++	mali_as0_update(mali_pt_top_phys, MALI_TRANSCFG_4K);
++	shader_mask = mali_prd(mali_p_gpu, 0x100);
++	if (shader_mask == 0) {
++		mali_as0_update(0, 2);
++		mali_uapi_busy = 0;
++		return SWEET_UAPI_ERR_FAULT;
++	}
++
++	mali_pwr(mali_p_gpu, MALI_JOB_INT_MASK, 0);
++	mali_pwr(mali_p_gpu, MALI_JOB_INT_CLEAR, 0xffffffffu);
++	mali_pwr(mali_p_gpu, js + MALI_JS_HEAD_NEXT_LO, (uint32_t)jc);
++	mali_pwr(mali_p_gpu, js + MALI_JS_HEAD_NEXT_HI, (uint32_t)(jc >> 32));
++	mali_pwr(mali_p_gpu, js + MALI_JS_AFFINITY_LO, shader_mask);
++	mali_pwr(mali_p_gpu, js + MALI_JS_AFFINITY_HI, 0);
++	mali_pwr(mali_p_gpu, js + MALI_JS_CONFIG_NEXT, MALI_JS_CONFIG);
++	mali_pwr(mali_p_gpu, js + MALI_JS_COMMAND_NEXT, 1u);
++	done = mali_wait(mali_p_gpu, MALI_JOB_INT_RAWSTAT, bit, bit, 2000000);
++	if (!done) {
++		done = (mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT) & bit) != 0;
++	}
++	status = mali_prd(mali_p_gpu, js + MALI_JS_STATUS);
++	mali_pwr(mali_p_gpu, MALI_JOB_INT_CLEAR, 0xffffffffu);
++	for (i = 0; i < nhandles; i++) {
++		FlushPoC_DcacheRegion(bos[i]->kva, bos[i]->size);
++	}
++
++	if (!done || mali_prd(mali_p_gpu, MALI_AS0 + MALI_AS_FAULTSTATUS) != 0) {
++		/* Put the GPU back before anything else can trip over the state. */
++		mali_gpu_recover(shader_mask);       /* also restores identity mode */
++		mali_uapi_bad++;
++		mali_uapi_busy = 0;
++		return done ? SWEET_UAPI_ERR_FAULT : SWEET_UAPI_ERR_TIMEOUT;
++	}
++	mali_as0_update(0, 2);                   /* identity again for the bg worker */
++	if (out_sync != 0) {
++		mali_uapi_sync_signal(out_sync);
++	}
++	mali_uapi_last_seq++;
++	mali_uapi_submits++;
++	(void)status;
++	mali_uapi_busy = 0;
++	return err;
++}
++
++static void
++mali_uapi_selftest(void)
++{
++	struct mali_uapi_create_bo cbo;
++	uint32_t handles[1];
++	volatile uint32_t *job, *dst;
++	struct mali_uapi_bo *bo;
++	uint64_t target;
++	int err;
++
++	if (mali_uapi_selftest_done) {
++		return;
++	}
++	mali_uapi_selftest_done = 1;
++	/* One BO: page 0 carries the job descriptor, page 1 is the target. */
++	bzero(&cbo, sizeof(cbo));
++	cbo.size = 32768;
++	cbo.flags = MALI_UAPI_BO_NOEXEC;
++	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
++	if (err != SWEET_UAPI_ERR_OK) {
++		printf("SWEET MALI: v55 uapi selftest: create failed err=%d\n", err);
++		return;
++	}
++	handles[0] = cbo.handle;
++	bo = mali_uapi_bo_by_handle(cbo.handle);
++	job = (volatile uint32_t *)bo->kva;
++	target = cbo.offset + 16384ull;
++	/* The proven one-shot header (mali_run_write_job): write a 32-bit
++	 * immediate to the first word of page 1. */
++	job[4] = (2u << 1) | 1u | (1u << 16);
++	job[8] = (uint32_t)target;
++	job[9] = (uint32_t)(target >> 32);
++	job[10] = 6u;
++	job[12] = MALI_JOB_MAGIC;
++	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
++	dst = (volatile uint32_t *)(bo->kva + 16384);
++	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
++	printf("SWEET MALI: v55 uapi selftest err=%d word=%08x target=%08x%08x %s\n",
++	    err, *dst, (uint32_t)(cbo.offset >> 32), (uint32_t)cbo.offset,
++	    mali_uapi_selftest_ok ? "-- UAPI OK" : "-- UAPI FAILED");
++	(void)mali_uapi_bo_close(cbo.handle);
++}
++
++/*
++ * Called from SweetGPUUserClient::externalMethod (0271) for selector >= 2.
++ * The in/out buffers are the framework's kernel copies of the caller's
++ * struct; nested user pointers (bo_handles, in_syncs, syncobj handle
++ * arrays) are read with copyin() on the caller's thread, same as viva.
++ */
++int
++sweet_gpu_uapi_call(uint32_t selector, const void *in, uint32_t in_size,
++    void *out, uint32_t *out_size)
++{
++	if (selector >= 23 || mali_uapi_sel_size[selector] == 0) {
++		return SWEET_UAPI_ERR_UNSUPP;
++	}
++	if (in_size < mali_uapi_sel_size[selector] ||
++	    *out_size < mali_uapi_sel_size[selector]) {
++		return SWEET_UAPI_ERR_BADARG;
++	}
++
++	switch (selector) {
++	case MALI_UAPI_SEL_CREATE_BO: {
++		struct mali_uapi_create_bo arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		return mali_uapi_bo_alloc(arg.size, arg.flags, &arg.handle, &arg.offset);
++	}
++	case MALI_UAPI_SEL_MMAP_BO: {
++		struct mali_uapi_mmap_bo arg;
++		struct mali_uapi_bo *bo;
++
++		bcopy(in, &arg, sizeof(arg));
++		bo = mali_uapi_bo_by_handle(arg.handle);
++		if (bo == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		/* The memoryType token is the handle; the CPU mapping itself
++		 * lands with the client's clientMemoryForType (0273). */
++		arg.offset = arg.handle;
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_GET_BO_OFFSET: {
++		struct mali_uapi_get_bo_offset arg;
++		struct mali_uapi_bo *bo;
++
++		bcopy(in, &arg, sizeof(arg));
++		bo = mali_uapi_bo_by_handle(arg.handle);
++		if (bo == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		arg.offset = bo->va;
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_GEM_CLOSE: {
++		struct mali_uapi_gem_close arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		return mali_uapi_bo_close(arg.handle);
++	}
++	case MALI_UAPI_SEL_SUBMIT: {
++		struct mali_uapi_submit arg;
++		uint32_t handles[SWEET_UAPI_HANDLES_MAX];
++		uint32_t in_syncs[SWEET_UAPI_HANDLES_MAX];
++		uint32_t i, seq;
++		int err;
++
++		bcopy(in, &arg, sizeof(arg));
++		if (arg.bo_handle_count > SWEET_UAPI_HANDLES_MAX ||
++		    (arg.bo_handle_count > 0 && arg.bo_handles == 0)) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		if (arg.in_sync_count > SWEET_UAPI_HANDLES_MAX) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		if (arg.bo_handle_count > 0 &&
++		    copyin((user_addr_t)arg.bo_handles, handles,
++		    (vm_size_t)arg.bo_handle_count * sizeof(uint32_t)) != 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		/* Implicit sync: submits are synchronous, so whatever the
++		 * caller waits on is already finished by the time we kick. */
++		if (arg.in_sync_count > 0) {
++			if (arg.in_syncs == 0 ||
++			    copyin((user_addr_t)arg.in_syncs, in_syncs,
++			    (vm_size_t)arg.in_sync_count * sizeof(uint32_t)) != 0) {
++				return SWEET_UAPI_ERR_BADARG;
++			}
++			for (i = 0; i < arg.in_sync_count; i++) {
++				if (!mali_uapi_sync_alive(in_syncs[i])) {
++					return SWEET_UAPI_ERR_BADARG;
++				}
++			}
++		}
++		err = mali_uapi_submit_internal(arg.jc, arg.requirements, handles,
++		    arg.bo_handle_count, arg.out_sync);
++		arg.seq = mali_uapi_last_seq;
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return err;
++	}
++	case MALI_UAPI_SEL_WAIT_BO: {
++		struct mali_uapi_wait_bo arg;
++		struct mali_uapi_bo *bo;
++
++		bcopy(in, &arg, sizeof(arg));
++		bo = mali_uapi_bo_by_handle(arg.handle);
++		if (bo == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		/* Jobs complete before SUBMIT returns, so any BO's work is
++		 * done unless a fault killed the GPU (the client sees that
++		 * error from SUBMIT itself). */
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_MADVISE: {
++		struct mali_uapi_madvise arg;
++		struct mali_uapi_bo *bo;
++
++		bcopy(in, &arg, sizeof(arg));
++		bo = mali_uapi_bo_by_handle(arg.handle);
++		if (bo == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		arg.retained = 1;                    /* nothing is evictable yet */
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_SYNCOBJ_CREATE: {
++		struct mali_uapi_syncobj_create arg;
++		uint32_t i;
++
++		bcopy(in, &arg, sizeof(arg));
++		for (i = 0; i < SWEET_UAPI_SYNC_MAX; i++) {
++			if (!mali_uapi_syncs[i].used) {
++				mali_uapi_syncs[i].used = 1;
++				mali_uapi_syncs[i].signalled = (arg.flags & MALI_UAPI_SYNCOBJ_CREATE_SIGNALED) != 0;
++				mali_uapi_sync_count++;
++				arg.handle = i + 1;
++				bcopy(&arg, out, sizeof(arg));
++				*out_size = sizeof(arg);
++				return SWEET_UAPI_ERR_OK;
++			}
++		}
++		return SWEET_UAPI_ERR_NOMEM;
++	}
++	case MALI_UAPI_SEL_SYNCOBJ_DESTROY: {
++		struct mali_uapi_syncobj_destroy arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		if (!mali_uapi_sync_alive(arg.handle)) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		mali_uapi_syncs[arg.handle - 1].used = 0;
++		mali_uapi_syncs[arg.handle - 1].signalled = 0;
++		mali_uapi_sync_count--;
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_SYNCOBJ_WAIT: {
++		struct mali_uapi_syncobj_wait arg;
++		uint32_t handles[SWEET_UAPI_HANDLES_MAX];
++		uint64_t now;
++		int all;
++
++		bcopy(in, &arg, sizeof(arg));
++		if (arg.count_handles == 0 || arg.count_handles > SWEET_UAPI_HANDLES_MAX ||
++		    arg.handles == 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		if (copyin((user_addr_t)arg.handles, handles,
++		    (vm_size_t)arg.count_handles * sizeof(uint32_t)) != 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		all = (arg.flags & MALI_UAPI_SYNCOBJ_WAIT_ALL) != 0;
++		for (;;) {
++			uint32_t i;
++			int met = 1, first = -1;
++
++			for (i = 0; i < arg.count_handles; i++) {
++				if (!mali_uapi_sync_alive(handles[i])) {
++					return SWEET_UAPI_ERR_BADARG;
++				}
++				if (mali_uapi_syncs[handles[i] - 1].signalled) {
++					if (first < 0) {
++						first = (int)i;
++					}
++				} else if (all) {
++					met = 0;
++				}
++			}
++			if (first >= 0 && (!all || met)) {
++				arg.first_signaled = (uint32_t)first;
++				bcopy(&arg, out, sizeof(arg));
++				*out_size = sizeof(arg);
++				return SWEET_UAPI_ERR_OK;
++			}
++			absolutetime_to_nanoseconds(mach_absolute_time(), &now);
++			if ((int64_t)now >= arg.timeout_nsec) {
++				return SWEET_UAPI_ERR_TIMEOUT;
++			}
++			{
++				uint64_t deadline;
++
++				clock_interval_to_deadline(10, NSEC_PER_MSEC, &deadline);
++				(void)assert_wait_deadline((event_t)&mali_uapi_syncs, THREAD_UNINT, deadline);
++				thread_block(THREAD_CONTINUE_NULL);
++			}
++		}
++	}
++	case MALI_UAPI_SEL_SYNCOBJ_RESET:
++	case MALI_UAPI_SEL_SYNCOBJ_SIGNAL: {
++		struct mali_uapi_syncobj_array arg;
++		uint32_t handles[SWEET_UAPI_HANDLES_MAX], i;
++		int sig = (selector == MALI_UAPI_SEL_SYNCOBJ_SIGNAL);
++
++		bcopy(in, &arg, sizeof(arg));
++		if (arg.count_handles == 0 || arg.count_handles > SWEET_UAPI_HANDLES_MAX ||
++		    arg.handles == 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		if (copyin((user_addr_t)arg.handles, handles,
++		    (vm_size_t)arg.count_handles * sizeof(uint32_t)) != 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		for (i = 0; i < arg.count_handles; i++) {
++			if (!mali_uapi_sync_alive(handles[i])) {
++				return SWEET_UAPI_ERR_BADARG;
++			}
++			mali_uapi_syncs[handles[i] - 1].signalled = sig;
++		}
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_SYNC_BO: {
++		struct mali_uapi_sync_bo arg;
++		struct mali_uapi_bo_sync_op ops[SWEET_UAPI_HANDLES_MAX];
++		uint32_t i;
++
++		bcopy(in, &arg, sizeof(arg));
++		if (arg.op_count == 0 || arg.op_count > SWEET_UAPI_HANDLES_MAX || arg.ops == 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		if (copyin((user_addr_t)arg.ops, ops,
++		    (vm_size_t)arg.op_count * sizeof(struct mali_uapi_bo_sync_op)) != 0) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		for (i = 0; i < arg.op_count; i++) {
++			struct mali_uapi_bo *bo = mali_uapi_bo_by_handle(ops[i].handle);
++			uint64_t off = ops[i].offset, len = ops[i].size;
++
++			if (bo == NULL) {
++				return SWEET_UAPI_ERR_BADARG;
++			}
++			if (ops[i].type != MALI_UAPI_SYNC_CPU_CACHE_FLUSH &&
++			    ops[i].type != MALI_UAPI_SYNC_CPU_CACHE_FLUSH_INVALIDATE) {
++				return SWEET_UAPI_ERR_BADARG;
++			}
++			if (off >= (uint64_t)bo->size) {
++				return SWEET_UAPI_ERR_BADARG;
++			}
++			if (len == 0 || off + len > (uint64_t)bo->size) {
++				len = (uint64_t)bo->size - off;
++			}
++			/* FlushPoC_DcacheRegion is the only cache primitive used
++			 * anywhere in this driver; both op types ride on it
++			 * (clean+invalidate at PoC) until a finer split is needed. */
++			FlushPoC_DcacheRegion(bo->kva + off, (size_t)len);
++		}
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_QUERY_BO_INFO: {
++		struct mali_uapi_query_bo_info arg;
++		struct mali_uapi_bo *bo;
++
++		bcopy(in, &arg, sizeof(arg));
++		bo = mali_uapi_bo_by_handle(arg.handle);
++		if (bo == NULL) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		arg.create_flags = bo->flags;
++		arg.extra_flags = 0;
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_JM_CTX_CREATE: {
++		struct mali_uapi_jm_ctx arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		arg.handle = 1;                      /* one context per connection, viva style */
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_JM_CTX_DESTROY: {
++		struct mali_uapi_jm_ctx arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		if (arg.handle != 1) {
++			return SWEET_UAPI_ERR_BADARG;
++		}
++		return SWEET_UAPI_ERR_OK;
++	}
++	default:
++		return SWEET_UAPI_ERR_UNSUPP;
++	}
++}
++
+ /*
+  * v35: the first thing the GPU draws itself.
+  *
+@@ -1886,6 +2645,14 @@
+ 	for (;;) {
+ 		uint64_t deadline;
+ 		unsigned i, done = 0;
++
++		if (mali_uapi_busy) {
++			/* a UAPI submit owns AS0 right now: wait it out */
++			clock_interval_to_deadline(500, NSEC_PER_MSEC, &deadline);
++			(void)assert_wait_deadline((event_t)&mali_bg_thread, THREAD_UNINT, deadline);
++			thread_block(THREAD_CONTINUE_NULL);
++			continue;
++		}
+ 
+ 		for (i = 0; i < 8; i++) {
+ 			if (mali_submit_value(mali_bg_page, mali_bg_phys,
+@@ -2194,7 +2961,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v54 no memory for the compute test\n");
++		printf("SWEET MALI: v55 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -2288,10 +3055,12 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v54 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v55 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
++
++	mali_uapi_selftest();
+ 
+ 	kmem_free(kernel_map, srcpage, PAGE_SIZE);
+ 	kmem_free(kernel_map, dstpage, PAGE_SIZE);
+@@ -2430,7 +3199,7 @@
+ 	 */
+ 	mali_as0_update(0, 2);
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v54 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v55 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -2481,7 +3250,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v54 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v55 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -2544,7 +3313,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v54");
++		mali_bg3d_gate("v55");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -2649,7 +3418,7 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v54 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v55 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
+@@ -2657,6 +3426,9 @@
+ 		printf("SWEET GPU: service state=%d gpu_id=%08x\n",
+ 		    sweet_gpu_service_state(), sweet_gpu_reg_read(0));
+ 	}
++	printf("SWEET GPU UAPI: bos=%u submits=%u bad=%u sync=%u selftest=%d\n",
++	    mali_uapi_bo_count, mali_uapi_submits, mali_uapi_bad,
++	    mali_uapi_sync_count, mali_uapi_selftest_ok);
+ 	printf("SWEET MALI: PMIC VPROC1 con0=%04x(%d) dbg0=%04x(%d) dbg1=%04x(%d) elr0=%04x(%d)\n",
+ 		    vp1_con, a, vp1_vosel, b, vp1_en, c, vp1_elr, e);
+ 		printf("SWEET MALI: PMIC VSRAM_MD con0=%04x(%d) mon=%04x(%d) vosel1=%04x(%d)\n",

@@ -1,0 +1,45 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1001,6 +1001,8 @@
+ /* Provided by bsd/dev/sweet_touch_mtk.c. */
+ extern "C" int      sweet_gpu_is_powered(void);
+ extern "C" uint32_t sweet_gpu_reg_read(uint32_t off);
++extern "C" int sweet_gpu_uapi_call(uint32_t selector, const void *in,
++    uint32_t in_size, void *out, uint32_t *out_size);
+ 
+ #define kSweetGPUGpuId              0x000
+ #define kSweetGPUL2Features         0x004
+@@ -1173,6 +1175,32 @@
+     IOExternalMethodDispatch *dispatch, OSObject *target, void *reference)
+ {
+ 	IOReturn ret = kIOReturnUnsupported;
++	/* v55: viva-gpu-numbered selectors 2..22 (BO/submit/sync UAPI) are
++	 * implemented next to the Mali engine in bsd/dev/sweet_touch_mtk.c.
++	 * Errors come back errno-style and map to kIOReturn here. */
++	if (selector >= 2) {
++		uint32_t outSize = args->structureOutputSize;
++		int err;
++
++		if (args->structureInput == NULL || args->structureOutput == NULL) {
++			return kIOReturnBadArgument;
++		}
++		err = sweet_gpu_uapi_call(selector, args->structureInput,
++		    args->structureInputSize, args->structureOutput, &outSize);
++		if (err == 0) {
++			args->structureOutputSize = outSize;
++			return kIOReturnSuccess;
++		}
++		switch (err) {
++		case 1: return kIOReturnUnsupported;
++		case 2: return kIOReturnBadArgument;
++		case 3: return kIOReturnNoMemory;
++		case 4: return kIOReturnBusy;
++		case 5: return kIOReturnTimeout;
++		case 6: return kIOReturnInvalid;
++		}
++		return kIOReturnError;
++	}
+ 
+ 	if (selector == kSweetGPUGetVersion) {
+ 		if (args->structureOutput != NULL &&
