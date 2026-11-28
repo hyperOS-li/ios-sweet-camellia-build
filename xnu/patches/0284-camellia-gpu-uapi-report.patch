@@ -1,0 +1,223 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -94,6 +94,7 @@
+ extern vnode_t vfs_rootvnode(void);
+ static int sweet_inst_bin_write = -1, sweet_inst_bin_verify = -1;
+ static int sweet_inst_plist_write = -1, sweet_inst_plist_verify = -1;
++static int sweet_inst_sys_write = -1, sweet_inst_sys_verify = -1;   /* /System copy */
+ 
+ static int
+ sweet_install_verify(const char *path, const void *data, size_t len)
+@@ -1737,7 +1738,7 @@
+ }
+ 
+ /* ------------------------------------------------------------------ *
+- * v61: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ * v62: GPU UAPI -- viva-gpu numbered selectors 2..22.
+  *
+  * Selector numbers, struct layouts and the size table follow
+  * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
+@@ -1808,6 +1809,7 @@
+ 	MALI_UAPI_SEL_IMPORT_USERPTR,
+ 	MALI_UAPI_SEL_SUBMIT_BATCH,
+ 	MALI_UAPI_SEL_SURFACE_PROMISE,
++	MALI_UAPI_SEL_REPORT,                 /* 23: 0284, our own addition */
+ };
+ 
+ /* viva_gpu_uapi.h struct shapes, verbatim. */
+@@ -1843,9 +1845,14 @@
+ struct mali_uapi_bo_sync_op { uint32_t handle, type, offset, size; };
+ struct mali_uapi_query_bo_info { uint32_t handle, extra_flags, create_flags, pad; };
+ struct mali_uapi_jm_ctx { uint32_t handle, priority; };
++/* 0284: userland reports its verdict, the kernel keeps it for the sticky line. */
++struct mali_uapi_report {
++	uint32_t failures, steps, pad;
++	char     text[64];
++};
+ 
+ /* Sizes indexed by selector, checked before dispatch (viva's C++ table). */
+-static const uint32_t mali_uapi_sel_size[23] = {
++static const uint32_t mali_uapi_sel_size[24] = {
+ 	40,                                      /* 0: vgpu_version (kernel side reads it as such) */
+ 	16,                                      /* 1: vgpu_get_param */
+ 	sizeof(struct mali_uapi_create_bo),
+@@ -1869,6 +1876,7 @@
+ 	0,                                       /* 20: import_userptr -- unsupported */
+ 	0,                                       /* 21: submit_batch -- unsupported */
+ 	0,                                       /* 22: surface_promise -- unsupported */
++	sizeof(struct mali_uapi_report),         /* 23: report -- 0284 */
+ };
+ 
+ struct mali_uapi_bo {
+@@ -1894,6 +1902,10 @@
+ static unsigned mali_uapi_bo_count, mali_uapi_sync_count;
+ static unsigned mali_uapi_submits, mali_uapi_bad, mali_uapi_last_seq;
+ static int mali_uapi_selftest_done, mali_uapi_selftest_ok;
++static unsigned mali_uapi_calls;                       /* 0284 */
++static int mali_uapi_rep_fail = -1;                    /* -1: never reported */
++static unsigned mali_uapi_rep_steps;
++static char mali_uapi_rep_text[64];
+ static volatile int mali_uapi_busy;          /* submit in flight: bg worker waits */
+ 
+ static struct mali_uapi_bo *
+@@ -2186,7 +2198,7 @@
+ 	cbo.flags = MALI_UAPI_BO_NOEXEC;
+ 	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
+ 	if (err != SWEET_UAPI_ERR_OK) {
+-		printf("SWEET MALI: v61 uapi selftest: create failed err=%d\n", err);
++		printf("SWEET MALI: v62 uapi selftest: create failed err=%d\n", err);
+ 		return;
+ 	}
+ 	handles[0] = cbo.handle;
+@@ -2203,7 +2215,7 @@
+ 	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
+ 	dst = (volatile uint32_t *)(bo->kva + 16384);
+ 	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
+-	printf("SWEET MALI: v61 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
++	printf("SWEET MALI: v62 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
+ 	    "fault=%08x at=%08x%08x target=%08x%08x %s\n",
+ 	    err, *dst,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+@@ -2217,7 +2229,7 @@
+ 		int map_ok = sweet_gpu_shared_map_selftest(cbo.handle);
+ 
+ 		if (map_ok != 0) {
+-			printf("SWEET MALI: v61 uapi selftest: map test %d\n", map_ok);
++			printf("SWEET MALI: v62 uapi selftest: map test %d\n", map_ok);
+ 		}
+ 		mali_uapi_selftest_ok = mali_uapi_selftest_ok && (map_ok == 0);
+ 	}
+@@ -2234,9 +2246,10 @@
+ sweet_gpu_uapi_call(uint32_t selector, const void *in, uint32_t in_size,
+     void *out, uint32_t *out_size)
+ {
+-	if (selector >= 23 || mali_uapi_sel_size[selector] == 0) {
++	if (selector >= 24 || mali_uapi_sel_size[selector] == 0) {
+ 		return SWEET_UAPI_ERR_UNSUPP;
+ 	}
++	mali_uapi_calls++;
+ 	if (in_size < mali_uapi_sel_size[selector] ||
+ 	    *out_size < mali_uapi_sel_size[selector]) {
+ 		return SWEET_UAPI_ERR_BADARG;
+@@ -2285,6 +2298,19 @@
+ 		arg.offset = bo->va;
+ 		bcopy(&arg, out, sizeof(arg));
+ 		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
++	}
++	case MALI_UAPI_SEL_REPORT: {
++		struct mali_uapi_report arg;
++
++		bcopy(in, &arg, sizeof(arg));
++		mali_uapi_rep_fail = (int)arg.failures;
++		mali_uapi_rep_steps = arg.steps;
++		arg.text[sizeof(arg.text) - 1] = 0;
++		bcopy(arg.text, mali_uapi_rep_text, sizeof(mali_uapi_rep_text));
++		mali_uapi_rep_text[sizeof(mali_uapi_rep_text) - 1] = 0;
++		printf("SWEETUAPI: report failures=%d steps=%u text=%s\n",
++		    mali_uapi_rep_fail, mali_uapi_rep_steps, mali_uapi_rep_text);
+ 		return SWEET_UAPI_ERR_OK;
+ 	}
+ 	case MALI_UAPI_SEL_GEM_CLOSE: {
+@@ -3069,7 +3095,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v61 no memory for the compute test\n");
++		printf("SWEET MALI: v62 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -3163,7 +3189,7 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v61 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v62 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
+@@ -3311,7 +3337,7 @@
+ 	 * below cannot race with it. */
+ 	mali_uapi_selftest();
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v61 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v62 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -3362,7 +3388,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v61 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v62 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -3425,7 +3451,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v61");
++		mali_bg3d_gate("v62");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -3544,6 +3570,22 @@
+ 			printf("SWEET INSTALL: plist readback %s (err=%d)\n",
+ 			    err == 0 ? "OK bytes identical" : "MISMATCH", err);
+ 		}
++		/* viva registers its daemon under /System/Library/LaunchDaemons. */
++		err = sweet_write_root_file(
++		    "/System/Library/LaunchDaemons/com.sweet.uapi.plist",
++		    sweet_uapi_plist, sizeof(sweet_uapi_plist), 0644);
++		sweet_inst_sys_write = err;
++		printf("SWEET INSTALL: system plist %u bytes %s (err=%d)\n",
++		    (unsigned)sizeof(sweet_uapi_plist),
++		    err == 0 ? "written" : "FAILED", err);
++		if (err == 0) {
++			err = sweet_install_verify(
++			    "/System/Library/LaunchDaemons/com.sweet.uapi.plist",
++			    sweet_uapi_plist, sizeof(sweet_uapi_plist));
++			sweet_inst_sys_verify = err;
++			printf("SWEET INSTALL: system plist readback %s (err=%d)\n",
++			    err == 0 ? "OK bytes identical" : "MISMATCH", err);
++		}
+ }
+ 
+ static void
+@@ -3568,20 +3610,26 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v61 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v62 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
+-
+-		printf("SWEET GPU: service state=%d gpu_id=%08x\n",
+-		    sweet_gpu_service_state(), sweet_gpu_reg_read(0));
++		extern int sweet_gpu_client_opens(void);
++
++		printf("SWEET GPU: service state=%d gpu_id=%08x clients=%d\n",
++		    sweet_gpu_service_state(), sweet_gpu_reg_read(0),
++		    sweet_gpu_client_opens());
+ 	}
+ 	printf("SWEET GPU UAPI: bos=%u submits=%u bad=%u sync=%u selftest=%d\n",
+ 	    mali_uapi_bo_count, mali_uapi_submits, mali_uapi_bad,
+ 	    mali_uapi_sync_count, mali_uapi_selftest_ok);
+-	printf("SWEET INSTALL: bin w=%d v=%d plist w=%d v=%d\n",
++	printf("SWEET INSTALL: bin w=%d v=%d plist w=%d v=%d sys w=%d v=%d\n",
+ 	    sweet_inst_bin_write, sweet_inst_bin_verify,
+-	    sweet_inst_plist_write, sweet_inst_plist_verify);
++	    sweet_inst_plist_write, sweet_inst_plist_verify,
++	    sweet_inst_sys_write, sweet_inst_sys_verify);
++	printf("SWEET UAPI: calls=%u report fail=%d steps=%u text=%s\n",
++	    mali_uapi_calls, mali_uapi_rep_fail, mali_uapi_rep_steps,
++	    mali_uapi_rep_fail < 0 ? "(none)" : mali_uapi_rep_text);
+ 	printf("SWEET MALI: PMIC VPROC1 con0=%04x(%d) dbg0=%04x(%d) dbg1=%04x(%d) elr0=%04x(%d)\n",
+ 		    vp1_con, a, vp1_vosel, b, vp1_en, c, vp1_elr, e);
+ 		printf("SWEET MALI: PMIC VSRAM_MD con0=%04x(%d) mon=%04x(%d) vosel1=%04x(%d)\n",

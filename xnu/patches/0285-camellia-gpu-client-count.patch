@@ -1,0 +1,19 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1147,6 +1147,8 @@
+ #define kSweetGPUCoherencyFeatures  0x300
+ #define kSweetGPUTlsAlloc           0x310
+ 
++static int gSweetGPUClientOpens;   /* 0285: user clients the GPU service accepted */
++
+ class SweetGPUUserClient : public IOUserClient
+ {
+ 	OSDeclareDefaultStructors(SweetGPUUserClient);
+@@ -1398,7 +1400,6 @@
+ }
+ 
+ static bool gSweetGPUStarted;
+-static int gSweetGPUClientOpens;
+ 
+ static bool
+ sweet_gpu_bring_up(IOService *provider)

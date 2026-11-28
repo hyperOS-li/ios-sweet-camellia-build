@@ -1,0 +1,29 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -80,6 +80,7 @@
+ {
+ 	struct sweet_proc_snap snap[SWEET_PROCS_SHOWN];
+ 	int shown = 0, total = 0;
++	int uapi = 0;          /* 0286: our userland harness, if launchd started it */
+ 	proc_t p;
+ 
+ 	proc_list_lock();
+@@ -88,6 +89,9 @@
+ 			continue;       /* still forking: no name yet */
+ 		}
+ 		total++;
++		if (strncmp(p->p_comm, "sweetuapi", sizeof(p->p_comm)) == 0) {
++			uapi++;
++		}
+ 		if (shown < SWEET_PROCS_SHOWN) {
+ 			snap[shown].pid = proc_pid(p);
+ 			strlcpy(snap[shown].comm, p->p_comm,
+@@ -97,7 +101,7 @@
+ 	}
+ 	proc_list_unlock();
+ 
+-	printf("SWEET: procs=%d disp=%d [", total, sweet_display_state);
++	printf("SWEET: procs=%d disp=%d uapi=%d [", total, sweet_display_state, uapi);
+ 	for (int i = 0; i < shown; i++) {
+ 		printf("%s%d:%s", i != 0 ? " " : "", snap[i].pid, snap[i].comm);
+ 	}
