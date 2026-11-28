@@ -1,0 +1,18 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1155,12 +1155,12 @@
+ 	 * so launchd's cache loader never races with our write.
+ 	 */
+ 	{
+-		extern void sweet_install_from_init(void);
++		extern void sweet_install_from_init(int mode);
+ 		int sweetcache = 0;
+ 
+ 		PE_parse_boot_argn("sweetcache", &sweetcache, sizeof(sweetcache));
+-		if (sweetcache == 1) {
+-			sweet_install_from_init();
++		if (sweetcache == 1 || sweetcache == 2) {
++			sweet_install_from_init(sweetcache);
+ 		}
+ 	}
+ #endif
