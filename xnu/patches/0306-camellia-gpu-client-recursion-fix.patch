@@ -1,0 +1,16 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1196,7 +1196,12 @@
+ bool
+ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
+ {
+-	return initWithTask(owningTask, securityID, type, NULL);
++	/* 0306: must NOT call our own 4-arg overload.  XNU's
++	 * IOUserClient::initWithTask(owningTask, securityID, type, properties)
++	 * calls this 3-arg method VIRTUALLY, so delegating to our own 4-arg
++	 * recursed forever inside IOServiceOpen (console flood of
++	 * "initWithTask enter", clients=0, calls=0). */
++	return IOUserClient::initWithTask(owningTask, securityID, type);
+ }
+ 
+ bool
