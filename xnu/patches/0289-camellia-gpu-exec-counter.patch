@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -901,6 +901,11 @@
+ extern int use_panic_on_proc_spawn_fail;
+ #endif
+ 
++#if defined(SWEET)
++/* 0289: how many times launchd (or anyone) tried to exec our harness. */
++int sweet_exec_uapi_count;
++#endif
++
+ void
+ set_proc_name(struct image_params *imgp, proc_t p)
+ {
+@@ -924,6 +929,9 @@
+ 
+ #if defined(SWEET)
+ 	printf("SWEETEXEC %d %s\n", proc_pid(p), p->p_comm);
++	if (strncmp(p->p_comm, "sweetuapi", sizeof(p->p_comm)) == 0) {
++		sweet_exec_uapi_count++;
++	}
+ #endif
+ 
+ #if DEVELOPMENT || DEBUG
