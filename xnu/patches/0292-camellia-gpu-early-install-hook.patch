@@ -1,0 +1,25 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1149,6 +1149,22 @@
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++#if defined(SWEET)
++	/*
++	 * 0292: install the userland harness / launchd job cache before init runs,
++	 * so launchd's cache loader never races with our write.
++	 */
++	{
++		extern void sweet_install_from_init(void);
++		int sweetcache = 0;
++
++		PE_parse_boot_argn("sweetcache", &sweetcache, sizeof(sweetcache));
++		if (sweetcache == 1) {
++			sweet_install_from_init();
++		}
++	}
++#endif
++
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }

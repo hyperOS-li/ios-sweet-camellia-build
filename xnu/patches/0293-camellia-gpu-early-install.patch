@@ -1,0 +1,130 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1745,7 +1745,7 @@
+ }
+ 
+ /* ------------------------------------------------------------------ *
+- * v64: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ * v65: GPU UAPI -- viva-gpu numbered selectors 2..22.
+  *
+  * Selector numbers, struct layouts and the size table follow
+  * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
+@@ -2205,7 +2205,7 @@
+ 	cbo.flags = MALI_UAPI_BO_NOEXEC;
+ 	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
+ 	if (err != SWEET_UAPI_ERR_OK) {
+-		printf("SWEET MALI: v64 uapi selftest: create failed err=%d\n", err);
++		printf("SWEET MALI: v65 uapi selftest: create failed err=%d\n", err);
+ 		return;
+ 	}
+ 	handles[0] = cbo.handle;
+@@ -2222,7 +2222,7 @@
+ 	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
+ 	dst = (volatile uint32_t *)(bo->kva + 16384);
+ 	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
+-	printf("SWEET MALI: v64 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
++	printf("SWEET MALI: v65 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
+ 	    "fault=%08x at=%08x%08x target=%08x%08x %s\n",
+ 	    err, *dst,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+@@ -2236,7 +2236,7 @@
+ 		int map_ok = sweet_gpu_shared_map_selftest(cbo.handle);
+ 
+ 		if (map_ok != 0) {
+-			printf("SWEET MALI: v64 uapi selftest: map test %d\n", map_ok);
++			printf("SWEET MALI: v65 uapi selftest: map test %d\n", map_ok);
+ 		}
+ 		mali_uapi_selftest_ok = mali_uapi_selftest_ok && (map_ok == 0);
+ 	}
+@@ -3102,7 +3102,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v64 no memory for the compute test\n");
++		printf("SWEET MALI: v65 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -3196,7 +3196,7 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v64 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v65 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
+@@ -3344,7 +3344,7 @@
+ 	 * below cannot race with it. */
+ 	mali_uapi_selftest();
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v64 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v65 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -3395,7 +3395,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v64 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v65 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -3458,7 +3458,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v64");
++		mali_bg3d_gate("v65");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -3541,6 +3541,16 @@
+ 	printf("SWEET MALI: power-on failed, status %08x\n", mali_prd(mali_p_spm, 0x16C));
+ }
+ 
++/* 0293: called from bsd_init right after the root is mounted. */
++static void sweet_install_harness(void);
++
++void
++sweet_install_from_init(void)
++{
++	printf("SWEET INSTALL: early install from bsd_init (root is up)\n");
++	sweet_install_harness();
++}
++
+ /* 0282: GPU power-on happens before mountroot, so the install runs from the
+  * 10 s status loop once vfs_rootvnode() exists. */
+ static void
+@@ -3600,9 +3610,16 @@
+ 		printf("SWEET INSTALL: cache pre-state %s (err=%d)\n",
+ 		    sweet_cache_preexist == 0 ? "still ours" : "replaced/other",
+ 		    sweet_cache_preexist);
+-		err = sweet_write_root_file("/System/Library/xpc/launchd.plist",
+-		    sweet_launchd_plist, sizeof(sweet_launchd_plist), 0644);
+-		sweet_inst_cache_write = err;
++		if (sweet_cache_preexist == 0) {
++			/* Already ours: rewriting a live cache is what raced with launchd. */
++			sweet_inst_cache_write = 0;
++			sweet_inst_cache_verify = 0;
++			err = 0;
++		} else {
++			err = sweet_write_root_file("/System/Library/xpc/launchd.plist",
++			    sweet_launchd_plist, sizeof(sweet_launchd_plist), 0644);
++			sweet_inst_cache_write = err;
++		}
+ 		printf("SWEET INSTALL: launchd cache %u bytes %s (err=%d)\n",
+ 		    (unsigned)sizeof(sweet_launchd_plist),
+ 		    err == 0 ? "written" : "FAILED", err);
+@@ -3637,7 +3654,7 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v64 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v65 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
