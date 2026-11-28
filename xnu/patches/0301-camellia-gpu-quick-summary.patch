@@ -1,49 +1,19 @@
 --- a/bsd/dev/sweet_touch_mtk.c
 +++ b/bsd/dev/sweet_touch_mtk.c
-@@ -1277,6 +1277,7 @@
- static void sweet_mali_probe_loop(void);
- 
- static void sweet_mali_power_status(void);
-+static void sweet_quick_summary(void);
- 
- static int mali_probe_chan;
- 
-@@ -1285,10 +1286,15 @@
- {
- 	uint64_t deadline;
- 
-+	unsigned tick = 0;
+@@ -3728,6 +3728,16 @@
+ 	    mali_p_mfgcfg ? mali_prd(mali_p_mfgcfg, 0x20) : 0,
+ 	    mali_prd(mali_p_gpu, 0x000), mali_prd(mali_p_gpu, 0x100),
+ 	    mali_prd(mali_p_gpu, 0x110), mali_prd(mali_p_gpu, 0x120));
++	{
++		extern int sweet_gpu_client_opens(void);
++		extern int sweet_gpu_service_state(void);
 +
- 	for (;;) {
--		sweet_mali_probe_loop();
--		sweet_mali_power_status();
--		clock_interval_to_deadline(10000, NSEC_PER_MSEC, &deadline);
-+		sweet_quick_summary();
-+		if ((tick++ % 5) == 0) {
-+			sweet_mali_probe_loop();
-+			sweet_mali_power_status();
-+		}
-+		clock_interval_to_deadline(2000, NSEC_PER_MSEC, &deadline);
- 		(void)assert_wait_deadline(&mali_probe_chan, THREAD_UNINT, deadline);
- 		thread_block(THREAD_CONTINUE_NULL);
- 	}
-@@ -3673,6 +3679,19 @@
- 		}
- }
++		/* 0301: one-line GPU/userland summary, kept on screen by sweetquiet. */
++		printf("SWEET G: svc=%d self=%d cli=%d rep=%d/%u exe=%d calls=%u\n",
++		    sweet_gpu_service_state(), mali_uapi_selftest_ok,
++		    sweet_gpu_client_opens(), mali_uapi_rep_fail,
++		    mali_uapi_rep_steps, sweet_exec_uapi_count, mali_uapi_calls);
++	}
  
-+/* 0301: one short GPU line every 2 s, readable on any photo. */
-+static void
-+sweet_quick_summary(void)
-+{
-+	extern int sweet_gpu_client_opens(void);
-+	extern int sweet_gpu_service_state(void);
-+
-+	printf("SWEET G: svc=%d self=%d cli=%d rep=%d/%u exe=%d calls=%u\n",
-+	    sweet_gpu_service_state(), mali_uapi_selftest_ok,
-+	    sweet_gpu_client_opens(), mali_uapi_rep_fail,
-+	    mali_uapi_rep_steps, sweet_exec_uapi_count, mali_uapi_calls);
-+}
-+
- static void
- sweet_mali_power_status(void)
- {
+ 	/* 0282: install the userland harness once the root filesystem is up. */
+ 	if (!sweet_install_done) {
