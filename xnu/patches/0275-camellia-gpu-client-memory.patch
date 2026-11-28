@@ -1,0 +1,188 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -43,6 +43,8 @@
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOKitKeys.h>
+ #include <IOKit/IOLib.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <kern/task.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOWorkLoop.h>
+ #include <IOKit/IOTimerEventSource.h>
+@@ -1004,6 +1006,127 @@
+ extern "C" int sweet_gpu_uapi_call(uint32_t selector, const void *in,
+     uint32_t in_size, void *out, uint32_t *out_size);
+ 
++/*
++ * GPU BO memory shared with the client (0275).
++ *
++ * The memory is an IOBufferMemoryDescriptor: its reference count owns the
++ * pages, so a user mapping keeps them alive after GEM_CLOSE, and unmapping
++ * matches the descriptor instance, so exactly one descriptor per token is
++ * kept here.  type in clientMemoryForType is the UAPI BO handle.
++ */
++#define kSweetGPUSharedMax   32
++#define kSweetGPUSharedPage  16384u
++#define kSweetGPUMagic       0xc0ffee01u
++
++static IOBufferMemoryDescriptor *gSweetGPUShared[kSweetGPUSharedMax];
++
++extern "C" void sweet_gpu_uapi_client_close_all(void);
++
++extern "C" int
++sweet_gpu_shared_create(uint32_t token, uint64_t size, uint64_t *kva,
++    uint64_t *phys, uint32_t *pages)
++{
++	IOBufferMemoryDescriptor *md;
++	vm_size_t rounded;
++	uint32_t i, n;
++
++	if (token == 0 || token > kSweetGPUSharedMax) {
++		return -1;
++	}
++	if (gSweetGPUShared[token - 1] != NULL) {
++		return -1;
++	}
++	if (kernel_task == NULL) {
++		return -1;
++	}
++	rounded = (vm_size_t)((size + (kSweetGPUSharedPage - 1)) & ~(uint64_t)(kSweetGPUSharedPage - 1));
++	if (rounded == 0 || rounded > (uint64_t)kSweetGPUSharedMax * kSweetGPUSharedPage) {
++		return -1;
++	}
++	n = (uint32_t)(rounded / kSweetGPUSharedPage);
++	md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut, rounded, kSweetGPUSharedPage);
++	if (md == NULL) {
++		return -1;
++	}
++	if (md->getBytesNoCopy() == NULL) {
++		md->release();
++		return -1;
++	}
++	for (i = 0; i < n; i++) {
++		IOByteCount seg = 0;
++
++		phys[i] = md->getPhysicalSegment((IOByteCount)i * kSweetGPUSharedPage,
++		    &seg, kIOMemoryMapperNone);
++		if (phys[i] == 0 || seg < kSweetGPUSharedPage) {
++			md->release();
++			return -1;
++		}
++	}
++	gSweetGPUShared[token - 1] = md;
++	*kva = (uint64_t)(uintptr_t)md->getBytesNoCopy();
++	*pages = n;
++	return 0;
++}
++
++extern "C" void
++sweet_gpu_shared_destroy(uint32_t token)
++{
++	if (token == 0 || token > kSweetGPUSharedMax) {
++		return;
++	}
++	if (gSweetGPUShared[token - 1] != NULL) {
++		gSweetGPUShared[token - 1]->release();
++		gSweetGPUShared[token - 1] = NULL;
++	}
++}
++
++static IOBufferMemoryDescriptor *
++sweet_gpu_shared_get(uint32_t token)
++{
++	if (token == 0 || token > kSweetGPUSharedMax) {
++		return NULL;
++	}
++	return gSweetGPUShared[token - 1];
++}
++
++/* 0 = the BO's descriptor maps into kernel_task and shows the selftest magic
++ * at +16384.  This validates the mapping path before userland exists. */
++extern "C" int
++sweet_gpu_shared_map_selftest(uint32_t token)
++{
++	IOBufferMemoryDescriptor *md = sweet_gpu_shared_get(token);
++	IOMemoryMap *map;
++	volatile uint32_t *w;
++	int ok;
++
++	if (md == NULL) {
++		return -1;
++	}
++	map = md->createMappingInTask(kernel_task, 0, kIOMapAnywhere);
++	if (map == NULL) {
++		return -2;
++	}
++	w = (volatile uint32_t *)((uintptr_t)map->getVirtualAddress() +
++	    kSweetGPUSharedPage);
++	ok = (*w == kSweetGPUMagic) ? 0 : -3;
++	map->release();
++	return ok;
++}
++
++static void
++sweet_gpu_shared_destroy_all(void)
++{
++	uint32_t i;
++
++	for (i = 0; i < kSweetGPUSharedMax; i++) {
++		if (gSweetGPUShared[i] != NULL) {
++			gSweetGPUShared[i]->release();
++			gSweetGPUShared[i] = NULL;
++		}
++	}
++}
++
+ #define kSweetGPUGpuId              0x000
+ #define kSweetGPUL2Features         0x004
+ #define kSweetGPUCoreFeatures       0x008
+@@ -1042,7 +1165,9 @@
+ 	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
+ 	virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+-	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;	virtual IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options,
++	    IOMemoryDescriptor **memory) APPLE_KEXT_OVERRIDE;
++
+ };
+ 
+ OSDefineMetaClassAndStructors(SweetGPUUserClient, IOUserClient);
+@@ -1080,7 +1205,12 @@
+ IOReturn
+ SweetGPUUserClient::clientClose(void)
+ {
++
+ 	IOLog("SWEET GPU: client closed\n");
++	/* Drop every BO this connection still holds (and with it the GPU
++	 * page table entries), then any descriptor the UAPI did not own. */
++	sweet_gpu_uapi_client_close_all();
++	sweet_gpu_shared_destroy_all();
+ 	return kIOReturnSuccess;
+ }
+ 
+@@ -1233,6 +1363,24 @@
+ 	return ret;
+ }
+ 
++/* IOConnectMapMemory64(memoryType = UAPI BO handle): the BO's descriptor, in
++ * the cacheable mode it was created with.  The same descriptor must come back
++ * on unmap, hence the table in sweet_gpu_shared_get(). */
++IOReturn
++SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
++    IOMemoryDescriptor **memory)
++{
++	IOBufferMemoryDescriptor *md = sweet_gpu_shared_get((uint32_t)type);
++
++	if (md == NULL) {
++		return kIOReturnBadArgument;
++	}
++	md->retain();
++	*options = 0;
++	*memory = md;
++	return kIOReturnSuccess;
++}
++
+ bool
+ IOAcceleratorES::start(IOService *provider)
+ {

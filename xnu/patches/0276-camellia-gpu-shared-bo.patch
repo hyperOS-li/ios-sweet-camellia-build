@@ -1,0 +1,190 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1675,7 +1675,7 @@
+ }
+ 
+ /* ------------------------------------------------------------------ *
+- * v56: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ * v57: GPU UAPI -- viva-gpu numbered selectors 2..22.
+  *
+  * Selector numbers, struct layouts and the size table follow
+  * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
+@@ -1819,6 +1819,14 @@
+ 	uint32_t pages;
+ 	uint64_t va;                             /* GPU VA base */
+ };
++/* 0275: BO memory lives in an IOBufferMemoryDescriptor inside
++ * SweetFramebuffer.cpp, keyed by the same handle, so a user mapping keeps
++ * the pages alive after GEM_CLOSE. */
++extern int sweet_gpu_shared_create(uint32_t token, uint64_t size, uint64_t *kva,
++    uint64_t *phys, uint32_t *pages);
++extern void sweet_gpu_shared_destroy(uint32_t token);
++extern int sweet_gpu_shared_map_selftest(uint32_t token);
++
+ static struct mali_uapi_bo mali_uapi_bos[SWEET_UAPI_BO_MAX];
+ static struct { int used, signalled; } mali_uapi_syncs[SWEET_UAPI_SYNC_MAX];
+ static unsigned mali_uapi_bo_count, mali_uapi_sync_count;
+@@ -1900,7 +1908,8 @@
+ 	vm_size_t rounded;
+ 	uint64_t va;
+ 	uint32_t i, slot, pages;
+-	vm_offset_t kva = 0;
++	uint64_t kva = 0;
++	uint64_t phys[SWEET_UAPI_BO_PAGES_MAX];
+ 
+ 	if (size == 0 || size > SWEET_UAPI_BO_PAGES_MAX * 16384u) {
+ 		return SWEET_UAPI_ERR_BADARG;
+@@ -1925,17 +1934,15 @@
+ 	if (va == 0) {
+ 		return SWEET_UAPI_ERR_NOMEM;
+ 	}
+-	if (kmem_alloc(kernel_map, &kva, rounded,
+-	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++	if (sweet_gpu_shared_create((uint32_t)(slot + 1), rounded, &kva, phys, &pages) != 0) {
+ 		return SWEET_UAPI_ERR_NOMEM;
+ 	}
+ 	for (i = 0; i < pages; i++) {
+-		uint64_t phys = kvtophys(kva + (uint64_t)i * 16384u);
+ 		uint32_t sub;
+ 
+ 		for (sub = 0; sub < 4; sub++) {
+ 			if (!mali_map_page(va + (uint64_t)i * 16384u + (uint64_t)sub * 4096u,
+-			    phys + (uint64_t)sub * 4096u)) {
++			    phys[i] + (uint64_t)sub * 4096u)) {
+ 				uint32_t r, s;
+ 
+ 				for (r = 0; r < i; r++) {
+@@ -1946,7 +1953,7 @@
+ 				for (s = 0; s < (int)sub; s++) {
+ 					(void)mali_unmap_page(va + (uint64_t)i * 16384u + (uint64_t)s * 4096u);
+ 				}
+-				kmem_free(kernel_map, kva, rounded);
++				sweet_gpu_shared_destroy((uint32_t)(slot + 1));
+ 				return SWEET_UAPI_ERR_NOMEM;
+ 			}
+ 		}
+@@ -1961,7 +1968,7 @@
+ 	bo->pages = pages;
+ 	bo->va = va;
+ 	for (i = 0; i < pages; i++) {
+-		bo->phys[i] = kvtophys(kva + (uint64_t)i * 16384u);
++		bo->phys[i] = phys[i];
+ 	}
+ 	mali_uapi_bo_count++;
+ 	*handle = bo->handle;
+@@ -1987,10 +1994,26 @@
+ 			(void)mali_unmap_page(bo->va + (uint64_t)i * 16384u + (uint64_t)sub * 4096u);
+ 		}
+ 	}
+-	kmem_free(kernel_map, bo->kva, bo->size);
++	/* The descriptor owns the pages: release it, a live user mapping keeps
++	 * its own reference (0275). */
++	sweet_gpu_shared_destroy(bo->handle);
+ 	bzero(bo, sizeof(*bo));
+ 	mali_uapi_bo_count--;
+ 	return SWEET_UAPI_ERR_OK;
++}
++
++/* Called from SweetGPUUserClient::clientClose: a process exit drops every BO
++ * the connection still holds, so the fixed BO table cannot leak across runs. */
++extern void
++sweet_gpu_uapi_client_close_all(void)
++{
++	uint32_t i;
++
++	for (i = 0; i < SWEET_UAPI_BO_MAX; i++) {
++		if (mali_uapi_bos[i].used) {
++			(void)mali_uapi_bo_close(mali_uapi_bos[i].handle);
++		}
++	}
+ }
+ 
+ /*
+@@ -2101,7 +2124,7 @@
+ 	cbo.flags = MALI_UAPI_BO_NOEXEC;
+ 	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
+ 	if (err != SWEET_UAPI_ERR_OK) {
+-		printf("SWEET MALI: v56 uapi selftest: create failed err=%d\n", err);
++		printf("SWEET MALI: v57 uapi selftest: create failed err=%d\n", err);
+ 		return;
+ 	}
+ 	handles[0] = cbo.handle;
+@@ -2118,7 +2141,7 @@
+ 	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
+ 	dst = (volatile uint32_t *)(bo->kva + 16384);
+ 	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
+-	printf("SWEET MALI: v56 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
++	printf("SWEET MALI: v57 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
+ 	    "fault=%08x at=%08x%08x target=%08x%08x %s\n",
+ 	    err, *dst,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+@@ -2128,6 +2151,14 @@
+ 	    mali_prd(mali_p_gpu, MALI_AS0 + MALI_AS_FAULTADDR_LO),
+ 	    (uint32_t)(cbo.offset >> 32), (uint32_t)cbo.offset,
+ 	    mali_uapi_selftest_ok ? "-- UAPI OK" : "-- UAPI FAILED");
++	{
++		int map_ok = sweet_gpu_shared_map_selftest(cbo.handle);
++
++		if (map_ok != 0) {
++			printf("SWEET MALI: v57 uapi selftest: map test %d\n", map_ok);
++		}
++		mali_uapi_selftest_ok = mali_uapi_selftest_ok && (map_ok == 0);
++	}
+ 	(void)mali_uapi_bo_close(cbo.handle);
+ }
+ 
+@@ -2968,7 +2999,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v56 no memory for the compute test\n");
++		printf("SWEET MALI: v57 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -3062,7 +3093,7 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v56 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v57 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
+@@ -3210,7 +3241,7 @@
+ 	 * below cannot race with it. */
+ 	mali_uapi_selftest();
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v56 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v57 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -3261,7 +3292,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v56 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v57 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -3324,7 +3355,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v56");
++		mali_bg3d_gate("v57");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -3429,7 +3460,7 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v56 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v57 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
