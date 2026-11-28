@@ -1,0 +1,151 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -89,6 +89,10 @@
+  * Returns 0 only when every byte matches: this is the kernel-side proof that
+  * the installer put the userland binary into the root filesystem intact.
+  */
++/* 0281: installer results for the steady-state block (0 = OK). */
++static int sweet_inst_bin_write = -1, sweet_inst_bin_verify = -1;
++static int sweet_inst_plist_write = -1, sweet_inst_plist_verify = -1;
++
+ static int
+ sweet_install_verify(const char *path, const void *data, size_t len)
+ {
+@@ -143,24 +147,28 @@
+ 	int error;
+ 
+ 	PE_parse_boot_argn("sweetinstall", &enable, sizeof(enable));
++	printf("SWEET INSTALL: probe entry enable=%d\n", enable);
+ 	if (enable == 2) {
+ 		int err;
+ 
+ 		/* Userland GPU harness (arm64 iOS, ad-hoc signed). */
+ 		err = sweet_write_root_file("/usr/libexec/sweetuapi",
+ 		    sweet_uapi_bin, sizeof(sweet_uapi_bin), 0755);
++		sweet_inst_bin_write = err;
+ 		printf("SWEET INSTALL: sweetuapi %u bytes %s (err=%d)\n",
+ 		    (unsigned)sizeof(sweet_uapi_bin),
+ 		    err == 0 ? "written" : "FAILED", err);
+ 		if (err == 0) {
+ 			err = sweet_install_verify("/usr/libexec/sweetuapi",
+ 			    sweet_uapi_bin, sizeof(sweet_uapi_bin));
++			sweet_inst_bin_verify = err;
+ 			printf("SWEET INSTALL: sweetuapi readback %s (err=%d)\n",
+ 			    err == 0 ? "OK bytes identical" : "MISMATCH", err);
+ 		}
+ 		err = sweet_write_root_file(
+ 		    "/Library/LaunchDaemons/com.sweet.uapi.plist",
+ 		    sweet_uapi_plist, sizeof(sweet_uapi_plist), 0644);
++		sweet_inst_plist_write = err;
+ 		printf("SWEET INSTALL: launchd plist %u bytes %s (err=%d)\n",
+ 		    (unsigned)sizeof(sweet_uapi_plist),
+ 		    err == 0 ? "written" : "FAILED", err);
+@@ -168,6 +176,7 @@
+ 			err = sweet_install_verify(
+ 			    "/Library/LaunchDaemons/com.sweet.uapi.plist",
+ 			    sweet_uapi_plist, sizeof(sweet_uapi_plist));
++			sweet_inst_plist_verify = err;
+ 			printf("SWEET INSTALL: plist readback %s (err=%d)\n",
+ 			    err == 0 ? "OK bytes identical" : "MISMATCH", err);
+ 		}
+@@ -1756,7 +1765,7 @@
+ }
+ 
+ /* ------------------------------------------------------------------ *
+- * v59: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ * v60: GPU UAPI -- viva-gpu numbered selectors 2..22.
+  *
+  * Selector numbers, struct layouts and the size table follow
+  * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
+@@ -2205,7 +2214,7 @@
+ 	cbo.flags = MALI_UAPI_BO_NOEXEC;
+ 	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
+ 	if (err != SWEET_UAPI_ERR_OK) {
+-		printf("SWEET MALI: v59 uapi selftest: create failed err=%d\n", err);
++		printf("SWEET MALI: v60 uapi selftest: create failed err=%d\n", err);
+ 		return;
+ 	}
+ 	handles[0] = cbo.handle;
+@@ -2222,7 +2231,7 @@
+ 	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
+ 	dst = (volatile uint32_t *)(bo->kva + 16384);
+ 	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
+-	printf("SWEET MALI: v59 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
++	printf("SWEET MALI: v60 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
+ 	    "fault=%08x at=%08x%08x target=%08x%08x %s\n",
+ 	    err, *dst,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+@@ -2236,7 +2245,7 @@
+ 		int map_ok = sweet_gpu_shared_map_selftest(cbo.handle);
+ 
+ 		if (map_ok != 0) {
+-			printf("SWEET MALI: v59 uapi selftest: map test %d\n", map_ok);
++			printf("SWEET MALI: v60 uapi selftest: map test %d\n", map_ok);
+ 		}
+ 		mali_uapi_selftest_ok = mali_uapi_selftest_ok && (map_ok == 0);
+ 	}
+@@ -3088,7 +3097,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v59 no memory for the compute test\n");
++		printf("SWEET MALI: v60 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -3182,7 +3191,7 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v59 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v60 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
+@@ -3330,7 +3339,7 @@
+ 	 * below cannot race with it. */
+ 	mali_uapi_selftest();
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v59 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v60 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -3381,7 +3390,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v59 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v60 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -3444,7 +3453,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v59");
++		mali_bg3d_gate("v60");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -3549,7 +3558,7 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v59 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v60 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
+@@ -3560,6 +3569,9 @@
+ 	printf("SWEET GPU UAPI: bos=%u submits=%u bad=%u sync=%u selftest=%d\n",
+ 	    mali_uapi_bo_count, mali_uapi_submits, mali_uapi_bad,
+ 	    mali_uapi_sync_count, mali_uapi_selftest_ok);
++	printf("SWEET INSTALL: bin w=%d v=%d plist w=%d v=%d\n",
++	    sweet_inst_bin_write, sweet_inst_bin_verify,
++	    sweet_inst_plist_write, sweet_inst_plist_verify);
+ 	printf("SWEET MALI: PMIC VPROC1 con0=%04x(%d) dbg0=%04x(%d) dbg1=%04x(%d) elr0=%04x(%d)\n",
+ 		    vp1_con, a, vp1_vosel, b, vp1_en, c, vp1_elr, e);
+ 		printf("SWEET MALI: PMIC VSRAM_MD con0=%04x(%d) mon=%04x(%d) vosel1=%04x(%d)\n",
