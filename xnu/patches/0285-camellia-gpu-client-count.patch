@@ -9,11 +9,22 @@
  class SweetGPUUserClient : public IOUserClient
  {
  	OSDeclareDefaultStructors(SweetGPUUserClient);
-@@ -1398,7 +1400,6 @@
+@@ -1199,6 +1201,7 @@
+ 	fGPU = provider;
+ 	IOLog("SWEET GPU: client opened (powered=%d gpu_id=%08x)\n",
+ 	    sweet_gpu_is_powered(), sweet_gpu_reg_read(kSweetGPUGpuId));
++	gSweetGPUClientOpens++;
+ 	return true;
  }
  
- static bool gSweetGPUStarted;
--static int gSweetGPUClientOpens;
- 
- static bool
- sweet_gpu_bring_up(IOService *provider)
+@@ -1456,3 +1459,10 @@
+ {
+ 	return gSweetGPUStarted ? 1 : 0;
+ }
++
++/* 0285: how many user clients the fake accelerator accepted. */
++extern "C" int
++sweet_gpu_client_opens(void)
++{
++	return gSweetGPUClientOpens;
++}
