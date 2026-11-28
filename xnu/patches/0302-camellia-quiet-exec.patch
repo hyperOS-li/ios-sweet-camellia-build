@@ -1,0 +1,17 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -928,7 +928,13 @@
+ 	p->p_comm[imgp->ip_ndp->ni_cnd.cn_namelen] = '\0';
+ 
+ #if defined(SWEET)
+-	printf("SWEETEXEC %d %s\n", proc_pid(p), p->p_comm);
++	{
++		extern int sweet_quiet;
++
++		if (!sweet_quiet) {
++			printf("SWEETEXEC %d %s\n", proc_pid(p), p->p_comm);
++		}
++	}
+ 	if (strncmp(p->p_comm, "sweetuapi", sizeof(p->p_comm)) == 0) {
+ 		sweet_exec_uapi_count++;
+ 	}
