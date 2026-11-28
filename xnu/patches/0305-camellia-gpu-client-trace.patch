@@ -1,0 +1,75 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -961,6 +961,10 @@
+ 	OSDeclareDefaultStructors(IOAcceleratorES);
+ public:
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	/* 0305: trace the IOUserClient creation path. */
++	virtual IOReturn newUserClient(task_t owningTask, void *securityID,
++	    UInt32 type, OSDictionary *properties,
++	    IOUserClient **handler) APPLE_KEXT_OVERRIDE;
+ };
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ 
+@@ -1178,11 +1182,14 @@
+ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type,
+     OSDictionary *properties)
+ {
++	IOLog("SWEET UC: initWithTask enter\n");
+ 	if (!IOUserClient::initWithTask(owningTask, securityID, type, properties)) {
++		IOLog("SWEET UC: initWithTask super FAILED\n");
+ 		return false;
+ 	}
+ 	fTask = owningTask;
+ 	fGPU = NULL;
++	IOLog("SWEET UC: initWithTask ok\n");
+ 	return true;
+ }
+ 
+@@ -1195,13 +1202,17 @@
+ bool
+ SweetGPUUserClient::start(IOService *provider)
+ {
++	IOLog("SWEET UC: start enter\n");
+ 	if (!IOUserClient::start(provider)) {
++		IOLog("SWEET UC: start super FAILED\n");
+ 		return false;
+ 	}
++	IOLog("SWEET UC: start super ok powered=%d\n", sweet_gpu_is_powered());
+ 	fGPU = provider;
+ 	IOLog("SWEET GPU: client opened (powered=%d gpu_id=%08x)\n",
+ 	    sweet_gpu_is_powered(), sweet_gpu_reg_read(kSweetGPUGpuId));
+ 	gSweetGPUClientOpens++;
++	IOLog("SWEET UC: start done\n");
+ 	return true;
+ }
+ 
+@@ -1308,6 +1319,9 @@
+     IOExternalMethodDispatch *dispatch, OSObject *target, void *reference)
+ {
+ 	IOReturn ret = kIOReturnUnsupported;
++
++	IOLog("SWEET UC: ext sel=%u in=%u out=%u\n", (unsigned)selector,
++	    (unsigned)args->structureInputSize, (unsigned)args->structureOutputSize);
+ 	/* v55: viva-gpu-numbered selectors 2..22 (BO/submit/sync UAPI) are
+ 	 * implemented next to the Mali engine in bsd/dev/sweet_touch_mtk.c.
+ 	 * Errors come back errno-style and map to kIOReturn here. */
+@@ -1399,6 +1413,18 @@
+ 	return true;
+ }
+ 
++IOReturn
++IOAcceleratorES::newUserClient(task_t owningTask, void *securityID, UInt32 type,
++    OSDictionary *properties, IOUserClient **handler)
++{
++	IOReturn kr;
++
++	IOLog("SWEET UC: newUserClient enter type=%u\n", (unsigned)type);
++	kr = IOService::newUserClient(owningTask, securityID, type, properties, handler);
++	IOLog("SWEET UC: newUserClient done kr=0x%x\n", kr);
++	return kr;
++}
++
+ static bool gSweetGPUStarted;
+ 
+ static bool
