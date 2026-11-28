@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/sweet_touch_mtk.c b/bsd/dev/sweet_touch_mtk.c
+--- a/bsd/dev/sweet_touch_mtk.c
++++ b/bsd/dev/sweet_touch_mtk.c
+@@ -1675,7 +1675,7 @@
+ }
+ 
+ /* ------------------------------------------------------------------ *
+- * v57: GPU UAPI -- viva-gpu numbered selectors 2..22.
++ * v58: GPU UAPI -- viva-gpu numbered selectors 2..22.
+  *
+  * Selector numbers, struct layouts and the size table follow
+  * Nik300/viva-gpu @9ebe5e4 uapi/viva_gpu_uapi.h so its userspace stack
+@@ -2124,7 +2124,7 @@
+ 	cbo.flags = MALI_UAPI_BO_NOEXEC;
+ 	err = mali_uapi_bo_alloc(cbo.size, cbo.flags, &cbo.handle, &cbo.offset);
+ 	if (err != SWEET_UAPI_ERR_OK) {
+-		printf("SWEET MALI: v57 uapi selftest: create failed err=%d\n", err);
++		printf("SWEET MALI: v58 uapi selftest: create failed err=%d\n", err);
+ 		return;
+ 	}
+ 	handles[0] = cbo.handle;
+@@ -2141,7 +2141,7 @@
+ 	err = mali_uapi_submit_internal(cbo.offset, 0, handles, 1, 0);
+ 	dst = (volatile uint32_t *)(bo->kva + 16384);
+ 	mali_uapi_selftest_ok = (err == SWEET_UAPI_ERR_OK && *dst == MALI_JOB_MAGIC);
+-	printf("SWEET MALI: v57 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
++	printf("SWEET MALI: v58 uapi selftest err=%d word=%08x raw=%08x slot=%08x "
+ 	    "fault=%08x at=%08x%08x target=%08x%08x %s\n",
+ 	    err, *dst,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+@@ -2155,7 +2155,7 @@
+ 		int map_ok = sweet_gpu_shared_map_selftest(cbo.handle);
+ 
+ 		if (map_ok != 0) {
+-			printf("SWEET MALI: v57 uapi selftest: map test %d\n", map_ok);
++			printf("SWEET MALI: v58 uapi selftest: map test %d\n", map_ok);
+ 		}
+ 		mali_uapi_selftest_ok = mali_uapi_selftest_ok && (map_ok == 0);
+ 	}
+@@ -2183,9 +2183,17 @@
+ 	switch (selector) {
+ 	case MALI_UAPI_SEL_CREATE_BO: {
+ 		struct mali_uapi_create_bo arg;
++		int err;
+ 
+ 		bcopy(in, &arg, sizeof(arg));
+-		return mali_uapi_bo_alloc(arg.size, arg.flags, &arg.handle, &arg.offset);
++		err = mali_uapi_bo_alloc(arg.size, arg.flags, &arg.handle, &arg.offset);
++		if (err != SWEET_UAPI_ERR_OK) {
++			return err;
++		}
++		/* Reply with handle and GPU VA: the caller cannot see `arg` otherwise. */
++		bcopy(&arg, out, sizeof(arg));
++		*out_size = sizeof(arg);
++		return SWEET_UAPI_ERR_OK;
+ 	}
+ 	case MALI_UAPI_SEL_MMAP_BO: {
+ 		struct mali_uapi_mmap_bo arg;
+@@ -2999,7 +3007,7 @@
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
+ 	    kmem_alloc(kernel_map, &tlspage, PAGE_SIZE,
+ 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MALI: v57 no memory for the compute test\n");
++		printf("SWEET MALI: v58 no memory for the compute test\n");
+ 		return;
+ 	}
+ 
+@@ -3093,7 +3101,7 @@
+ 	}
+ 	mali_compute_ok = (unsigned)ok;
+ 	mali_compute_words = (unsigned)MALI_COPY_ELEMS;
+-	printf("SWEET MALI: v57 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
++	printf("SWEET MALI: v58 compute copy %d/%d words ok (raw=%08x slot=%08x)\n",
+ 	    ok, (int)MALI_COPY_ELEMS,
+ 	    mali_prd(mali_p_gpu, MALI_JOB_INT_RAWSTAT),
+ 	    mali_prd(mali_p_gpu, MALI_JS1 + MALI_JS_STATUS));
+@@ -3241,7 +3249,7 @@
+ 	 * below cannot race with it. */
+ 	mali_uapi_selftest();
+ 	mali_bg_start(mali_prd(mali_p_gpu, 0x100));
+-	printf("SWEET MALI: v57 first job state=%x pt_pages=%u top=%08x%08x\n",
++	printf("SWEET MALI: v58 first job state=%x pt_pages=%u top=%08x%08x\n",
+ 	    mali_job_state, mali_pt_pages, (uint32_t)(mali_pt_top_phys >> 32),
+ 	    (uint32_t)mali_pt_top_phys);
+ 	kmem_free(kernel_map, page, PAGE_SIZE);
+@@ -3292,7 +3300,7 @@
+ 	}
+ 	misc = mali_prd(mali_p_infra, MALI_MFG_MISC_CON);
+ 	dfd = (misc >> 19) & 1u;
+-	printf("SWEET MALI: v57 power-on start 16C=%08x 170=%08x\n",
++	printf("SWEET MALI: v58 power-on start 16C=%08x 170=%08x\n",
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS),
+ 	    mali_prd(mali_p_spm, MALI_SPM_PWR_STATUS_2ND));
+ 	printf("SWEET MALI: MFG_MISC_CON=%08x dfd=%d done=%d\n", misc, dfd,
+@@ -3355,7 +3363,7 @@
+ 	 * PWR_ISO only isolates signals, it does not hold the clock. */
+ 	printf("SWEET MALI: gpu clocks on\n");
+ 	if (mfg1_sram) {
+-		mali_bg3d_gate("v57");
++		mali_bg3d_gate("v58");
+ 	} else {
+ 		printf("SWEET MALI: bg3d skipped (mfg1 sram not ready)\n");
+ 	}
+@@ -3460,7 +3468,7 @@
+ 		 * supply the whole time. */
+ 		printf("SWEET MALI: BG batches=%u jobs=%u ok=%u bad=%u\n",
+ 	    mali_bg_batches, mali_bg_jobs, mali_bg_ok, mali_bg_bad);
+-	printf("SWEET MALI: v57 compute copy %u/%u words ok\n",
++	printf("SWEET MALI: v58 compute copy %u/%u words ok\n",
+ 	    mali_compute_ok, mali_compute_words);
+ 	{
+ 		extern int sweet_gpu_service_state(void);
